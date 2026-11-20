@@ -1,0 +1,2702 @@
+diff --git a/src/game/base.rs b/src/game/base.rs
+index f1cc0f0..97c54aa 100644
+--- a/src/game/base.rs
++++ b/src/game/base.rs
+@@ -114,9 +114,107 @@ impl Game for PostFlopGame {
+     fn is_compression_enabled(&self) -> bool {
+         self.is_compression_enabled
+     }
++
++    fn apply_incentive(
++        &self,
++        node: &Self::Node,
++        player: usize,
++        cfreach: &[f32],
++        cfv_actions: &mut [f32],
++    ) {
++        let incentive = match self.incentive {
++            Some(incentive) if incentive.player == player => incentive,
++            _ => return,
++        };
++
++        let street = if node.river != NOT_DEALT {
++            2
++        } else if node.turn != NOT_DEALT {
++            1
++        } else {
++            0
++        };
++        if !incentive.streets[street] {
++            return;
++        }
++
++        // The pot on the table, including a bet this player has not called yet.
++        let children = node.children();
++        let to_call = children
++            .iter()
++            .find_map(|child| {
++                let child = child.lock();
++                (child.prev_action == Action::Call).then(|| child.amount - node.amount)
++            })
++            .unwrap_or(0);
++        let pot = (self.tree_config.starting_pot + 2 * node.amount + to_call) as f64;
++
++        let valid_indices = if node.river != NOT_DEALT {
++            &self.valid_indices_river[card_pair_to_index(node.turn, node.river)]
++        } else if node.turn != NOT_DEALT {
++            &self.valid_indices_turn[node.turn as usize]
++        } else {
++            &self.valid_indices_flop
++        };
++
++        // Terminal payoffs scale with the reach of opposing hands that do not share a card.
++        let mut cfreach_sum = 0.0;
++        let mut cfreach_minus = [0.0; 52];
++        for &i in &valid_indices[player ^ 1] {
++            let cfreach_i = cfreach[i as usize] as f64;
++            if cfreach_i != 0.0 {
++                let (c1, c2) = self.private_cards[player ^ 1][i as usize];
++                cfreach_sum += cfreach_i;
++                cfreach_minus[c1 as usize] += cfreach_i;
++                cfreach_minus[c2 as usize] += cfreach_i;
++            }
++        }
++        if cfreach_sum == 0.0 {
++            return;
++        }
++
++        let num_hands = self.private_cards[player].len();
++        let same_hand_index = &self.same_hand_index[player];
++        for (action, child) in children.iter().enumerate() {
++            let rate = match child.lock().prev_action {
++                Action::Check => incentive.check,
++                Action::Fold => incentive.fold,
++                Action::Call => incentive.call,
++                _ => incentive.bet,
++            } as f64;
++            if rate == 0.0 {
++                continue;
++            }
++            let amount = rate * pot / self.num_combinations;
++            let values = &mut cfv_actions[action * num_hands..(action + 1) * num_hands];
++            for &i in &valid_indices[player] {
++                let (c1, c2) = self.private_cards[player][i as usize];
++                let same_i = same_hand_index[i as usize];
++                let cfreach_same = if same_i == u16::MAX {
++                    0.0
++                } else {
++                    cfreach[same_i as usize] as f64
++                };
++                let reach = cfreach_sum + cfreach_same
++                    - cfreach_minus[c1 as usize]
++                    - cfreach_minus[c2 as usize];
++                values[i as usize] += (amount * reach) as f32;
++            }
++        }
++    }
++
++    #[inline]
++    fn storage_hand_indices(&self, node: &Self::Node, player: usize) -> Option<&[u16]> {
++        self.sparse_storage.then(|| self.storage_indices_on_board(node.turn, node.river, player))
++    }
+ }
+ 
+ impl PostFlopGame {
++    /// Biases one player's regret updates by action kind. Expected values ignore it.
++    pub fn set_incentive(&mut self, incentive: Option<Incentive>) {
++        self.incentive = incentive;
++    }
++
+     /// Creates a new empty [`PostFlopGame`].
+     ///
+     /// Use of this method is strongly discouraged because an instance created by this method is
+@@ -138,6 +236,14 @@ impl PostFlopGame {
+         Ok(game)
+     }
+ 
++    /// PokerLab extension: retain every public-card branch for asymmetric node locks.
++    /// Default constructors keep upstream suit-isomorphism behavior unchanged.
++    pub fn with_config_unmerged(card_config: CardConfig, action_tree: ActionTree) -> Result<Self, String> {
++        let mut game = Self::new();
++        game.update_config_internal(card_config, action_tree, true)?;
++        Ok(game)
++    }
++
+     /// Updates the game configuration. The solved result will be lost.
+     #[inline]
+     pub fn update_config(
+@@ -145,6 +251,100 @@ impl PostFlopGame {
+         card_config: CardConfig,
+         action_tree: ActionTree,
+     ) -> Result<(), String> {
++        self.update_config_internal(card_config, action_tree, false)
++    }
++
++    fn update_config_internal(
++        &mut self,
++        card_config: CardConfig,
++        action_tree: ActionTree,
++        expand_suits: bool,
++    ) -> Result<(), String> {
++        *self = Self::prepare_config(card_config, action_tree, expand_suits)?;
++        self.build_prepared()
++    }
++
++    /// PokerLab: card tables and exact storage counts before allocating the node arena.
++    pub fn prepare_config(card_config: CardConfig, action_tree: ActionTree, expand_suits: bool) -> Result<Self, String> {
++        let mut game = Self::new();
++        game.prepare_internal(card_config, action_tree, expand_suits)?;
++        Ok(game)
++    }
++
++    /// Enables legal-hand sparse storage before building the prepared node arena.
++    /// Dense logical ordering and 16-bit precision are unchanged. Upstream bincode
++    /// serialization and bunching are not supported in this opt-in storage mode.
++    pub fn set_sparse_storage(&mut self, enabled: bool) -> Result<(), String> {
++        if self.state != State::ConfigError || !self.node_arena.is_empty()
++            || self.private_cards.iter().any(Vec::is_empty)
++        {
++            return Err("Sparse storage must be configured on a successfully prepared, unbuilt game".into());
++        }
++        self.sparse_storage = enabled;
++        Ok(())
++    }
++
++    /// Returns whether physical arrays omit public-board-conflicting hands.
++    #[inline]
++    pub fn is_sparse_storage_enabled(&self) -> bool { self.sparse_storage }
++
++    #[inline]
++    fn storage_indices_on_board(&self, turn: Card, river: Card, player: usize) -> &[u16] {
++        if river != NOT_DEALT {
++            &self.valid_indices_river[card_pair_to_index(turn, river)][player]
++        } else if turn != NOT_DEALT {
++            &self.valid_indices_turn[turn as usize][player]
++        } else {
++            &self.valid_indices_flop[player]
++        }
++    }
++
++    #[inline]
++    fn storage_hands_on_board(&self, turn: Card, river: Card, player: usize) -> usize {
++        let dense = self.private_cards[player].len();
++        if !self.sparse_storage { return dense; }
++        let legal = self.storage_indices_on_board(turn, river, player).len();
++        legal + usize::from(legal < dense)
++    }
++
++    #[inline]
++    fn storage_num_private_hands(&self, node: &PostFlopNode, player: usize) -> usize {
++        self.storage_hands_on_board(node.turn, node.river, player)
++    }
++
++    /// Sum physical row widths over precisely the same canonical public boards
++    /// produced by push_chances, without allocating any expanded tree nodes.
++    fn storage_hand_sums(&self) -> [[u64; 2]; 3] {
++        let mut sums = [[0; 2]; 3];
++        let flop = self.card_config.flop;
++        let flop_mask = (1u64 << flop[0]) | (1u64 << flop[1]) | (1u64 << flop[2]);
++        let mut add = |street: usize, turn: Card, river: Card| {
++            for player in 0..2 {
++                sums[street][player] += self.storage_hands_on_board(turn, river, player) as u64;
++            }
++        };
++        if self.card_config.river != NOT_DEALT {
++            add(2, self.card_config.turn, self.card_config.river);
++            return sums;
++        }
++        if self.card_config.turn == NOT_DEALT { add(0, NOT_DEALT, NOT_DEALT); }
++        let turn_skip: u64 = self.isomorphism_card_turn.iter().map(|&card| 1u64 << card).sum();
++        for turn in 0..52u8 {
++            if self.card_config.turn != NOT_DEALT {
++                if turn != self.card_config.turn { continue; }
++            } else if (1u64 << turn) & (flop_mask | turn_skip) != 0 { continue; }
++            add(1, turn, NOT_DEALT);
++            let river_skip: u64 = self.isomorphism_card_river[turn as usize & 3].iter().map(|&card| 1u64 << card).sum();
++            for river in 0..52u8 {
++                if (1u64 << river) & (flop_mask | (1u64 << turn) | river_skip) == 0 {
++                    add(2, turn, river);
++                }
++            }
++        }
++        sums
++    }
++
++    fn prepare_internal(&mut self, card_config: CardConfig, action_tree: ActionTree, expand_suits: bool) -> Result<(), String> {
+         self.state = State::ConfigError;
+ 
+         if !action_tree.invalid_terminals().is_empty() {
+@@ -161,6 +361,20 @@ impl PostFlopGame {
+ 
+         self.check_card_config()?;
+         self.init_card_fields();
++        if expand_suits {
++            self.isomorphism_ref_turn.clear();
++            self.isomorphism_card_turn.clear();
++            self.isomorphism_swap_turn = Default::default();
++            self.isomorphism_ref_river = vec![Vec::new(); 52];
++            self.isomorphism_card_river = Default::default();
++            self.isomorphism_swap_river = Default::default();
++        }
++        Ok(())
++    }
++
++    /// PokerLab: materialize only after the caller has checked memory_plan against its budget.
++    pub fn build_prepared(&mut self) -> Result<(), String> {
++        if self.state != State::ConfigError {return Err("Game is not prepared".into());}
+         self.init_root()?;
+ 
+         self.state = State::TreeBuilt;
+@@ -171,6 +385,46 @@ impl PostFlopGame {
+         Ok(())
+     }
+ 
++    /// [arena bytes, action elements, IP elements, chance elements, card/misc bytes,
++    /// opponent lock elements, opponent lock nodes]. No expanded nodes allocated.
++    pub fn memory_plan(&self, opponent: usize) -> [u64; 7] {
++        fn visit(node: &ActionTreeNode, fresh: bool, hands: [u64;2], opponent: usize, rows: &mut [[u64;5];3]) {
++            if node.player & PLAYER_TERMINAL_FLAG != 0 {return;}
++            let row=&mut rows[node.board_state as usize];
++            if node.player & PLAYER_CHANCE_FLAG != 0 {
++                let previous=node.player & PLAYER_MASK;
++                if previous < 2 {row[2]+=hands[(previous ^ 1) as usize];}
++            } else {
++                let n=node.actions.len() as u64*hands[node.player as usize];
++                row[0]+=n;
++                if fresh {row[1]+=hands[1];}
++                if node.player as usize==opponent {row[3]+=n;row[4]+=1;}
++            }
++            for child in &node.children {visit(&child.lock(),node.player & PLAYER_CHANCE_FLAG != 0,hands,opponent,rows);}
++        }
++        let nodes=self.count_num_nodes();
++        let public=count_num_action_nodes(&self.action_root.lock());
++        let mut rows=[[0;5];3];
++        visit(&self.action_root.lock(),true,[self.private_cards[0].len() as u64,self.private_cards[1].len() as u64],opponent,&mut rows);
++        let mut sums=[0;5];
++        for s in 0..3 {let factor=if public[s]==0 {0}else{nodes[s]/public[s]};for i in 0..5 {sums[i]+=rows[s][i]*factor;}}
++        if self.sparse_storage {
++            // Action/IP/chance arrays are sparse; hard-lock vectors remain dense.
++            // Count each player's row coefficients once, then weight them by the
++            // exact legal widths of the actual canonical turn/river boards.
++            let mut oop_rows = [[0;5];3];
++            let mut ip_rows = [[0;5];3];
++            visit(&self.action_root.lock(), true, [1,0], opponent, &mut oop_rows);
++            visit(&self.action_root.lock(), true, [0,1], opponent, &mut ip_rows);
++            let hands = self.storage_hand_sums();
++            for i in 0..3 {
++                sums[i] = (0..3).map(|s| oop_rows[s][i] * hands[s][0] + ip_rows[s][i] * hands[s][1]).sum();
++            }
++        }
++        [nodes.iter().sum::<u64>()*mem::size_of::<MutexLike<PostFlopNode>>() as u64,
++         sums[0],sums[1],sums[2],self.memory_usage_internal(),sums[3],sums[4]]
++    }
++
+     /// Sets the bunching effect configuration.
+     ///
+     /// **Warning**: Enabling the bunching effect will significantly slow down the solving process.
+@@ -179,6 +433,9 @@ impl PostFlopGame {
+     /// hands)).
+     #[inline]
+     pub fn set_bunching_effect(&mut self, bunching_data: &BunchingData) -> Result<(), String> {
++        if self.sparse_storage {
++            return Err("Bunching is not supported with legal-hand sparse storage".into());
++        }
+         if self.state <= State::Uninitialized {
+             return Err("Game is not successfully initialized".to_string());
+         }
+@@ -753,7 +1010,7 @@ impl PostFlopGame {
+ 
+         node.num_elements = node
+             .cfvalue_storage_player()
+-            .map_or(0, |player| self.num_private_hands(player)) as u32;
++            .map_or(0, |player| self.storage_num_private_hands(&node, player)) as u32;
+ 
+         info.num_storage_chance += node.num_elements as u64;
+     }
+@@ -790,10 +1047,10 @@ impl PostFlopGame {
+             child.river = node.river;
+         }
+ 
+-        let num_private_hands = self.num_private_hands(node.player as usize);
++        let num_private_hands = self.storage_num_private_hands(&node, node.player as usize);
+         node.num_elements = (node.num_actions() * num_private_hands) as u32;
+         node.num_elements_ip = match node.prev_action {
+-            Action::None | Action::Chance(_) => self.num_private_hands(PLAYER_IP as usize) as u16,
++            Action::None | Action::Chance(_) => self.storage_num_private_hands(&node, PLAYER_IP as usize) as u16,
+             _ => 0,
+         };
+ 
+@@ -1391,7 +1648,7 @@ impl PostFlopGame {
+ 
+         // STEP 1
+         let mut info = BuildTreeInfo {
+-            num_storage: self.num_private_hands(node.player as usize) as u64,
++            num_storage: self.storage_num_private_hands(node, node.player as usize) as u64,
+             ..Default::default()
+         };
+ 
+@@ -1411,7 +1668,7 @@ impl PostFlopGame {
+         node.num_children -= 1;
+ 
+         // STEP 3
+-        node.num_elements -= self.num_private_hands(node.player as usize) as u32;
++        node.num_elements -= self.storage_num_private_hands(node, node.player as usize) as u32;
+ 
+         Ok(info)
+     }
+@@ -1448,3 +1705,72 @@ impl PostFlopGame {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod sparse_storage_plan_tests {
++    use super::*;
++    use crate::bet_size::BetSizeOptions;
++    use crate::{card_from_str, flop_from_str};
++
++    fn prepared(street: BoardState, expanded: bool, sparse: bool) -> PostFlopGame {
++        let cards = CardConfig {
++            range: ["AA:0.7,AKs:0.3,AQo:0.2".parse().unwrap(), "KK:0.4,KQs:0.8,QJs:0.2".parse().unwrap()],
++            flop: flop_from_str("9h8h2h").unwrap(),
++            turn: if street != BoardState::Flop { card_from_str("4s").unwrap() } else { NOT_DEALT },
++            river: if street == BoardState::River { card_from_str("3d").unwrap() } else { NOT_DEALT },
++        };
++        let bet: BetSizeOptions = ("50%", "").try_into().unwrap();
++        let tree = ActionTree::new(TreeConfig {
++            initial_state: street, starting_pot: 20, effective_stack: 20,
++            flop_bet_sizes: [bet.clone(), bet.clone()],
++            turn_bet_sizes: [bet.clone(), bet.clone()],
++            river_bet_sizes: [bet.clone(), bet],
++            ..Default::default()
++        }).unwrap();
++        let mut game = PostFlopGame::prepare_config(cards, tree, expanded).unwrap();
++        game.set_sparse_storage(sparse).unwrap();
++        game
++    }
++
++    #[test]
++    fn sparse_preallocation_plan_equals_built_arrays_on_all_starting_streets() {
++        for street in [BoardState::Flop, BoardState::Turn, BoardState::River] {
++            for expanded in [false, true] {
++                let dense = prepared(street, expanded, false).memory_plan(1);
++                let mut game = prepared(street, expanded, true);
++                let plan = game.memory_plan(1);
++                assert_eq!(plan[0], dense[0], "node arena must not change");
++                assert_eq!(&plan[5..], &dense[5..], "hard-lock plan must remain dense");
++                assert!(plan[1] <= dense[1] && plan[2] <= dense[2] && plan[3] <= dense[3]);
++                if street != BoardState::River { assert!(plan[1] < dense[1]); }
++                game.build_prepared().unwrap();
++                assert_eq!(plan[1], game.num_storage);
++                assert_eq!(plan[2], game.num_storage_ip);
++                assert_eq!(plan[3], game.num_storage_chance);
++                let words = 2 * plan[1] + plan[2] + plan[3];
++                assert_eq!(game.memory_usage(), (plan[0] + plan[4] + 4 * words, plan[0] + plan[4] + 2 * words));
++                assert!(game.set_sparse_storage(false).is_err(), "cannot change physical layout after build");
++                game.allocate_memory(true);
++                assert_eq!(game.storage1.len() as u64, 2 * plan[1]);
++                assert_eq!(game.storage2.len() as u64, 2 * plan[1]);
++                assert_eq!(game.storage_ip.len() as u64, 2 * plan[2]);
++                assert_eq!(game.storage_chance.len() as u64, 2 * plan[3]);
++            }
++        }
++    }
++
++    #[test]
++    fn sparse_unsupported_modes_are_rejected_explicitly() {
++        let mut game = prepared(BoardState::Turn, false, true);
++        game.build_prepared().unwrap();
++        let bunching = BunchingData::new(&["22".parse().unwrap()], game.card_config.flop).unwrap();
++        assert!(game.set_bunching_effect(&bunching).unwrap_err().contains("sparse"));
++        game.allocate_memory(true);
++        let lock = vec![1.0; game.root().num_actions() * game.num_private_hands(0)];
++        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            game.lock_current_strategy(&lock);
++        })).is_err(), "partial hard locks invalidate the shared illegal-hand ghost");
++        #[cfg(feature = "bincode")]
++        assert!(bincode::encode_to_vec(&game, bincode::config::standard()).unwrap_err().to_string().contains("Sparse"));
++    }
++}
+diff --git a/src/game/interpreter.rs b/src/game/interpreter.rs
+index d44d63a..faaa756 100644
+--- a/src/game/interpreter.rs
++++ b/src/game/interpreter.rs
+@@ -1,8 +1,34 @@
++use crate::sparse_storage::*;
+ use super::*;
+ use crate::interface::*;
+ use crate::sliceop::*;
+ use crate::utility::*;
+ 
++/// A lightweight snapshot of the interpreter cursor and its cached reach/values.
++///
++/// It contains no tree nodes, strategies, regrets, or locks. Restore it only on the
++/// same game without rebuilding/allocating/finalizing the game or changing an
++/// ancestor's strategy. Descendant strategy edits are deliberately preserved.
++#[derive(Clone, Debug, PartialEq)]
++pub struct InterpreterCheckpoint {
++    arena_address: usize,
++    arena_len: usize,
++    storage_address: usize,
++    game_state: u8,
++    action_history: Vec<usize>,
++    node_history: Vec<usize>,
++    is_normalized_weight_cached: bool,
++    turn: Card,
++    river: Card,
++    turn_swapped_suit: Option<(u8, u8)>,
++    turn_swap: Option<u8>,
++    river_swap: Option<(u8, u8)>,
++    total_bet_amount: [i32; 2],
++    weights: [Vec<f32>; 2],
++    normalized_weights: [Vec<f32>; 2],
++    cfvalues_cache: [Vec<f32>; 2],
++}
++
+ /// Decodes the encoded `i16` slice to the `f32` slice.
+ #[inline]
+ fn decode_signed_slice(slice: &[i16], scale: f32) -> Vec<f32> {
+@@ -10,7 +36,223 @@ fn decode_signed_slice(slice: &[i16], scale: f32) -> Vec<f32> {
+     slice.iter().map(|&x| x as f32 * decoder).collect()
+ }
+ 
++#[cfg(test)]
++mod checkpoint_tests {
++    use super::*;
++    use crate::{card_from_str, flop_from_str};
++
++    fn game(compressed: bool, expanded: bool) -> PostFlopGame {
++        let cards = CardConfig {
++            range: ["AA,AKs,QQ".parse().unwrap(), "JJ,TT,KQs".parse().unwrap()],
++            flop: flop_from_str("9h8h2h").unwrap(),
++            ..Default::default()
++        };
++        let sizing = || ("50%", "").try_into().unwrap();
++        let tree = ActionTree::new(TreeConfig {
++            starting_pot: 20,
++            effective_stack: 40,
++            flop_bet_sizes: [sizing(), sizing()],
++            turn_bet_sizes: [sizing(), sizing()],
++            river_bet_sizes: [sizing(), sizing()],
++            ..Default::default()
++        }).unwrap();
++        let mut game = if expanded {
++            PostFlopGame::with_config_unmerged(cards, tree).unwrap()
++        } else {
++            PostFlopGame::with_config(cards, tree).unwrap()
++        };
++        game.allocate_memory(compressed);
++        game
++    }
++
++    fn choose(game: &mut PostFlopGame, matches: impl Fn(&Action) -> bool) -> usize {
++        let action = game.available_actions().iter().position(matches).unwrap();
++        game.play(action);
++        action
++    }
++
++    #[test]
++    fn interpreter_checkpoint_preserves_descendant_edits_and_matches_replay() {
++        for compressed in [false, true] {
++            for expanded in [false, true] {
++                let mut game = game(compressed, expanded);
++                let hands = game.private_cards(0).len();
++                // A suit-symmetric non-uniform root policy exercises conditional reach.
++                let mut root_strategy = vec![0.25; hands * 2];
++                root_strategy[hands..].fill(0.75);
++                game.lock_current_strategy(&root_strategy);
++                choose(&mut game, |a| matches!(a, Action::Bet(_)));
++                choose(&mut game, |a| *a == Action::Call);
++                game.play(card_from_str("3d").unwrap() as usize);
++                if !expanded { assert!(game.turn_swap.is_some()); }
++                choose(&mut game, |a| matches!(a, Action::Bet(_)));
++
++                let actions = game.available_actions();
++                let hands = game.private_cards(game.current_player()).len();
++                let mut locked = vec![0.0; hands * actions.len()];
++                let fold = actions.iter().position(|a| *a == Action::Fold).unwrap();
++                let call = actions.iter().position(|a| *a == Action::Call).unwrap();
++                locked[fold * hands..(fold + 1) * hands].fill(0.4);
++                locked[call * hands..(call + 1) * hands].fill(0.6);
++                game.lock_current_strategy(&locked);
++                game.cache_normalized_weights();
++                let parent = game.checkpoint_interpreter();
++                assert!(parent.is_normalized_weight_cached);
++                assert!(parent.total_bet_amount[0] > parent.total_bet_amount[1]);
++
++                game.play(call);
++                let uncached = game.checkpoint_interpreter();
++                assert!(!uncached.is_normalized_weight_cached);
++                game.cache_normalized_weights();
++                game.restore_interpreter(&uncached);
++                assert_eq!(game.checkpoint_interpreter(), uncached);
++                game.play(card_from_str("4s").unwrap() as usize);
++                if !expanded { assert!(game.river_swap.is_some()); }
++                let leaf_path = game.history().to_vec();
++                let hands = game.private_cards(game.current_player()).len();
++                let mut edited = vec![0.0; hands * game.available_actions().len()];
++                edited[..hands].fill(1.0);
++                game.replace_current_strategy(&edited);
++                let expected_strategy = game.strategy();
++                game.cache_normalized_weights();
++                let river = game.checkpoint_interpreter();
++                choose(&mut game, |a| *a == Action::Check);
++                game.restore_interpreter(&river);
++                assert_eq!(game.checkpoint_interpreter(), river);
++
++                game.restore_interpreter(&parent);
++                assert_eq!(game.checkpoint_interpreter(), parent);
++                assert_eq!(game.current_locking_strategy().unwrap(), locked);
++                game.apply_history(&leaf_path);
++                assert_eq!(game.strategy(), expected_strategy);
++                // Replay uses the edited descendant policy, but it must not change
++                // reach at this unchanged ancestor or undo the descendant edits.
++                game.apply_history(&parent.action_history);
++                game.cache_normalized_weights();
++                assert_eq!(game.checkpoint_interpreter(), parent);
++                game.apply_history(&leaf_path);
++                assert_eq!(game.strategy(), expected_strategy);
++            }
++        }
++    }
++
++    #[test]
++    fn interpreter_checkpoint_keeps_zero_reach_and_rejects_other_game() {
++        let mut game = game(true, false);
++        let hands = game.private_cards(0).len();
++        let mut locked = vec![0.0; hands * 2];
++        locked[..hands].fill(1.0);
++        game.lock_current_strategy(&locked);
++        choose(&mut game, |a| matches!(a, Action::Bet(_)));
++        assert!(game.weights(0).iter().all(|&w| w == 0.0));
++        game.cache_normalized_weights();
++        let zero = game.checkpoint_interpreter();
++        choose(&mut game, |a| *a == Action::Call);
++        game.play(card_from_str("3d").unwrap() as usize);
++        game.cache_normalized_weights();
++        game.restore_interpreter(&zero);
++        assert_eq!(game.checkpoint_interpreter(), zero);
++        game.apply_history(&zero.action_history);
++        game.cache_normalized_weights();
++        assert_eq!(game.checkpoint_interpreter(), zero);
++
++        let mut other = self::game(true, false);
++        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            other.restore_interpreter(&zero);
++        }));
++        assert!(rejected.is_err());
++    }
++
++    #[test]
++    fn interpreter_checkpoint_restores_solved_value_caches() {
++        let cards = CardConfig {
++            range: ["AA,AKs,QQ".parse().unwrap(), "JJ,TT,KQs".parse().unwrap()],
++            flop: flop_from_str("9h8h2h").unwrap(),
++            turn: card_from_str("3d").unwrap(),
++            river: card_from_str("4s").unwrap(),
++        };
++        let tree = ActionTree::new(TreeConfig {
++            initial_state: BoardState::River,
++            starting_pot: 20,
++            effective_stack: 40,
++            river_bet_sizes: [("50%", "").try_into().unwrap(), ("50%", "").try_into().unwrap()],
++            ..Default::default()
++        }).unwrap();
++        let mut game = PostFlopGame::with_config(cards, tree).unwrap();
++        game.allocate_memory(true);
++        finalize(&mut game);
++        choose(&mut game, |a| matches!(a, Action::Bet(_)));
++        game.cache_normalized_weights();
++        assert!(game.cfvalues_cache[0].iter().any(|&v| v != 0.0));
++        let expected = [game.expected_values(0), game.expected_values(1)];
++        let parent = game.checkpoint_interpreter();
++        game.back_to_root();
++        choose(&mut game, |a| *a == Action::Check);
++        choose(&mut game, |a| matches!(a, Action::Bet(_)));
++        game.cache_normalized_weights();
++        game.restore_interpreter(&parent);
++        assert_eq!(game.checkpoint_interpreter(), parent);
++        assert_eq!([game.expected_values(0), game.expected_values(1)], expected);
++    }
++}
++
+ impl PostFlopGame {
++    /// Saves the interpreter state in O(number of private hands + history depth).
++    ///
++    /// Capture after editing the current strategy, then use this checkpoint to
++    /// return from descendant visits without replaying every ancestor action.
++    pub fn checkpoint_interpreter(&self) -> InterpreterCheckpoint {
++        assert!(self.state > State::Uninitialized, "Game is not successfully initialized");
++        InterpreterCheckpoint {
++            arena_address: self.node_arena.as_ptr() as usize,
++            arena_len: self.node_arena.len(),
++            storage_address: self.storage1.as_ptr() as usize,
++            game_state: self.state as u8,
++            action_history: self.action_history.clone(),
++            node_history: self.node_history.clone(),
++            is_normalized_weight_cached: self.is_normalized_weight_cached,
++            turn: self.turn,
++            river: self.river,
++            turn_swapped_suit: self.turn_swapped_suit,
++            turn_swap: self.turn_swap,
++            river_swap: self.river_swap,
++            total_bet_amount: self.total_bet_amount,
++            weights: self.weights.clone(),
++            normalized_weights: self.normalized_weights.clone(),
++            cfvalues_cache: self.cfvalues_cache.clone(),
++        }
++    }
++
++    /// Restores only the interpreter cursor/reach/cache, leaving all policies intact.
++    ///
++    /// The checkpoint is invalid after configuration, allocation, or solving-state
++    /// changes. It also must not be used after editing an ancestor's policy: its
++    /// stored reach would then describe the old ancestor policy.
++    pub fn restore_interpreter(&mut self, checkpoint: &InterpreterCheckpoint) {
++        assert!(
++            self.state > State::Uninitialized
++                && self.state as u8 == checkpoint.game_state
++                && self.node_arena.as_ptr() as usize == checkpoint.arena_address
++                && self.node_arena.len() == checkpoint.arena_len
++                && self.storage1.as_ptr() as usize == checkpoint.storage_address,
++            "Interpreter checkpoint belongs to a different or rebuilt game"
++        );
++        self.action_history.clone_from(&checkpoint.action_history);
++        self.node_history.clone_from(&checkpoint.node_history);
++        self.is_normalized_weight_cached = checkpoint.is_normalized_weight_cached;
++        self.turn = checkpoint.turn;
++        self.river = checkpoint.river;
++        self.turn_swapped_suit = checkpoint.turn_swapped_suit;
++        self.turn_swap = checkpoint.turn_swap;
++        self.river_swap = checkpoint.river_swap;
++        self.total_bet_amount = checkpoint.total_bet_amount;
++        for player in 0..2 {
++            self.weights[player].clone_from(&checkpoint.weights[player]);
++            self.normalized_weights[player].clone_from(&checkpoint.normalized_weights[player]);
++            self.cfvalues_cache[player].clone_from(&checkpoint.cfvalues_cache[player]);
++        }
++    }
++
+     /// Moves the current node back to the root node.
+     #[inline]
+     pub fn back_to_root(&mut self) {
+@@ -389,11 +631,12 @@ impl PostFlopGame {
+             // cache the counterfactual values
+             let node = self.node();
+             let vec = if self.is_compression_enabled {
+-                let slice = row(node.cfvalues_compressed(), action, num_hands);
++                let storage = dense_cfvalues_compressed(self, &*node);
++                let slice = row(&storage, action, num_hands);
+                 let scale = node.cfvalue_scale();
+-                decode_signed_slice(slice, scale)
++                decode_signed_slice(&slice, scale)
+             } else {
+-                row(node.cfvalues(), action, num_hands).to_vec()
++                row(&dense_cfvalues(self, &*node), action, num_hands).to_vec()
+             };
+             self.cfvalues_cache[player].copy_from_slice(&vec);
+ 
+@@ -748,28 +991,28 @@ impl PostFlopGame {
+             ret
+         } else if node.is_chance() && node.cfvalue_storage_player() == Some(player) {
+             if self.is_compression_enabled {
+-                let slice = node.cfvalues_chance_compressed();
++                let slice = dense_cfvalues_chance_compressed(self, &*node);
+                 let scale = node.cfvalue_chance_scale();
+-                decode_signed_slice(slice, scale)
++                decode_signed_slice(&slice, scale)
+             } else {
+-                node.cfvalues_chance().to_vec()
++                dense_cfvalues_chance(self, &*node).to_vec()
+             }
+         } else if node.has_cfvalues_ip() && player == PLAYER_IP as usize {
+             if self.is_compression_enabled {
+-                let slice = node.cfvalues_ip_compressed();
++                let slice = dense_cfvalues_ip_compressed(self, &*node);
+                 let scale = node.cfvalue_ip_scale();
+-                decode_signed_slice(slice, scale)
++                decode_signed_slice(&slice, scale)
+             } else {
+-                node.cfvalues_ip().to_vec()
++                dense_cfvalues_ip(self, &*node).to_vec()
+             }
+         } else if player == self.current_player() {
+             have_actions = true;
+             if self.is_compression_enabled {
+-                let slice = node.cfvalues_compressed();
++                let slice = dense_cfvalues_compressed(self, &*node);
+                 let scale = node.cfvalue_scale();
+-                decode_signed_slice(slice, scale)
++                decode_signed_slice(&slice, scale)
+             } else {
+-                node.cfvalues().to_vec()
++                dense_cfvalues(self, &*node).to_vec()
+             }
+         } else {
+             self.cfvalues_cache[player].to_vec()
+@@ -831,9 +1074,9 @@ impl PostFlopGame {
+         let num_hands = self.num_private_hands(player);
+ 
+         let mut ret = if self.is_compression_enabled {
+-            normalized_strategy_compressed(node.strategy_compressed(), num_actions)
++            normalized_strategy_compressed(&dense_strategy_compressed(self, &*node), num_actions)
+         } else {
+-            normalized_strategy(node.strategy(), num_actions)
++            normalized_strategy(&dense_strategy(self, &*node), num_actions)
+         };
+ 
+         let locking = self.locking_strategy(&node);
+@@ -846,6 +1089,27 @@ impl PostFlopGame {
+         ret
+     }
+ 
++    /// PokerLab: canonical identity for compiling a suit-invariant model once.
++    pub fn current_node_id(&self) -> usize {self.node_index(&self.node())}
++
++    /// PokerLab: replace this node's strategy in place, mapping actual suits to canonical suits.
++    /// Caller must NOT run CFR after compiling a frozen opponent this way.
++    pub fn replace_current_strategy(&mut self, strategy: &[f32]) {
++        assert!(self.state == State::MemoryAllocated);
++        assert!(!self.is_terminal_node() && !self.is_chance_node());
++        let player=self.current_player();
++        let hands=self.num_private_hands(player);
++        let mut values=strategy.to_vec();
++        let mut node=self.node();
++        assert_eq!(values.len(),node.num_actions()*hands);
++        assert!(!node.is_locked);
++        values.chunks_exact_mut(hands).for_each(|chunk|self.apply_swap(chunk,player,true));
++        if self.is_compression_enabled {
++            let scale=encode_unsigned_slice(&mut dense_strategy_compressed_mut(self, &mut *node),&values);
++            node.set_strategy_scale(scale);
++        } else {dense_strategy_mut(self, &mut *node).copy_from_slice(&values);}
++    }
++
+     /// Returns the total bet amount of each player (OOP, IP).
+     #[inline]
+     pub fn total_bet_amount(&self) -> [i32; 2] {
+@@ -868,6 +1132,7 @@ impl PostFlopGame {
+     /// Panics if the memory is not yet allocated or the game is already solved.
+     /// Also, panics if the current node is a terminal node or a chance node.
+     pub fn lock_current_strategy(&mut self, strategy: &[f32]) {
++        assert!(!self.sparse_storage, "Hard locks require dense storage");
+         if self.state < State::MemoryAllocated {
+             panic!("Memory is not allocated");
+         }
+diff --git a/src/game/mod.rs b/src/game/mod.rs
+index 33d9a19..70dddaf 100644
+--- a/src/game/mod.rs
++++ b/src/game/mod.rs
+@@ -3,6 +3,8 @@ mod evaluation;
+ mod interpreter;
+ mod node;
+ 
++pub use interpreter::InterpreterCheckpoint;
++
+ #[cfg(feature = "bincode")]
+ mod serialization;
+ 
+@@ -84,6 +86,9 @@ pub struct PostFlopGame {
+     target_storage_mode: BoardState,
+     num_nodes: [u64; 3],
+     is_compression_enabled: bool,
++    // PokerLab: legal public-board hands plus one invalid-hand ghost per row.
++    // Disabled by default; configure before materializing the node arena.
++    sparse_storage: bool,
+     num_storage: u64,
+     num_storage_ip: u64,
+     num_storage_chance: u64,
+@@ -98,6 +103,7 @@ pub struct PostFlopGame {
+     storage_ip: Vec<u8>,
+     storage_chance: Vec<u8>,
+     locking_strategy: BTreeMap<usize, Vec<f32>>,
++    incentive: Option<Incentive>,
+ 
+     // result interpreter
+     action_history: Vec<usize>,
+@@ -114,6 +120,18 @@ pub struct PostFlopGame {
+     cfvalues_cache: [Vec<f32>; 2],
+ }
+ 
++/// A virtual bonus per action kind for one player, as a fraction of the current pot.
++#[derive(Debug, Clone, Copy, Default)]
++pub struct Incentive {
++    pub player: usize,
++    pub check: f32,
++    pub bet: f32,
++    pub fold: f32,
++    pub call: f32,
++    /// Flop, turn and river: the bonus only applies on the streets marked true.
++    pub streets: [bool; 3],
++}
++
+ /// A struct representing a node in a postflop game tree.
+ ///
+ /// The nodes must be stored as `Vec<MutexLike<PostFlopNode>>`.
+diff --git a/src/game/serialization.rs b/src/game/serialization.rs
+index 951c785..b6154bc 100644
+--- a/src/game/serialization.rs
++++ b/src/game/serialization.rs
+@@ -111,6 +111,9 @@ thread_local! {
+ 
+ impl Encode for PostFlopGame {
+     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
++        if self.sparse_storage {
++            return Err(EncodeError::Other("Sparse storage is not supported by upstream bincode; use PokerLab policy/checkpoint snapshots"));
++        }
+         if self.state <= State::Uninitialized {
+             return Err(EncodeError::Other("Game is not successfully initialized"));
+         }
+diff --git a/src/interface.rs b/src/interface.rs
+index 2325a6c..bb9d165 100644
+--- a/src/interface.rs
++++ b/src/interface.rs
+@@ -72,11 +72,32 @@ pub trait Game: Send + Sync {
+         &[]
+     }
+ 
++    /// Adds any virtual per-action incentive to the traversing player's action values.
++    /// Only regret updates see it; expected values are computed without it.
++    #[doc(hidden)]
++    fn apply_incentive(
++        &self,
++        _node: &Self::Node,
++        _player: usize,
++        _cfreach: &[f32],
++        _cfv_actions: &mut [f32],
++    ) {
++    }
++
+     /// Returns whether the compression is enabled.
+     #[doc(hidden)]
+     fn is_compression_enabled(&self) -> bool {
+         false
+     }
++
++    /// Physical storage may omit hands conflicting with the current public board.
++    /// The sorted indices refer to the unchanged, dense private-hand ordering.
++    /// A sparse row stores these legal hands, then one shared invalid-hand value
++    /// when any hands are omitted. Logical consumers must use `dense_*` helpers.
++    #[doc(hidden)]
++    fn storage_hand_indices(&self, _node: &Self::Node, _player: usize) -> Option<&[u16]> {
++        None
++    }
+ }
+ 
+ /// The trait representing a node in game tree.
+@@ -101,7 +122,7 @@ pub trait GameNode: Send + Sync {
+     #[doc(hidden)]
+     fn play(&self, action: usize) -> MutexGuardLike<Self>;
+ 
+-    /// Returns the strategy.
++    /// Returns the physical strategy storage. Use `dense_strategy` for logical hands.
+     #[doc(hidden)]
+     fn strategy(&self) -> &[f32];
+ 
+diff --git a/src/lib.rs b/src/lib.rs
+index 1366953..c6e708c 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -72,6 +72,11 @@ mod mutex_like;
+ mod range;
+ mod sliceop;
+ mod solver;
++mod sparse_storage;
++#[cfg(not(feature = "custom-alloc"))]
++mod solver_scratch;
++#[cfg(all(test, not(feature = "custom-alloc")))]
++mod solver_scratch_tests;
+ mod utility;
+ 
+ #[cfg(feature = "bincode")]
+@@ -86,4 +91,5 @@ pub use interface::*;
+ pub use mutex_like::*;
+ pub use range::*;
+ pub use solver::*;
++pub use sparse_storage::*;
+ pub use utility::*;
+diff --git a/src/solver.rs b/src/solver.rs
+index 5a1cc5a..4e6d630 100644
+--- a/src/solver.rs
++++ b/src/solver.rs
+@@ -1,9 +1,12 @@
++use crate::sparse_storage::*;
+ use crate::interface::*;
+ use crate::mutex_like::*;
+ use crate::sliceop::*;
+ use crate::utility::*;
+ use std::io::{self, Write};
+ use std::mem::MaybeUninit;
++#[cfg(not(feature = "custom-alloc"))]
++use crate::solver_scratch::Scratch;
+ 
+ #[cfg(feature = "custom-alloc")]
+ use crate::alloc::*;
+@@ -74,7 +77,7 @@ pub fn solve<T: Game>(
+         for player in 0..2 {
+             let mut result = Vec::with_capacity(game.num_private_hands(player));
+             solve_recursive(
+-                result.spare_capacity_mut(),
++                &mut result.spare_capacity_mut()[..game.num_private_hands(player)],
+                 game,
+                 &mut root,
+                 player,
+@@ -122,7 +125,7 @@ pub fn solve_step<T: Game>(game: &T, current_iteration: u32) {
+     for player in 0..2 {
+         let mut result = Vec::with_capacity(game.num_private_hands(player));
+         solve_recursive(
+-            result.spare_capacity_mut(),
++            &mut result.spare_capacity_mut()[..game.num_private_hands(player)],
+             game,
+             &mut root,
+             player,
+@@ -161,7 +164,7 @@ fn solve_recursive<T: Game>(
+     #[cfg(feature = "custom-alloc")]
+     let cfv_actions = MutexLike::new(Vec::with_capacity_in(num_actions * num_hands, StackAlloc));
+     #[cfg(not(feature = "custom-alloc"))]
+-    let cfv_actions = MutexLike::new(Vec::with_capacity(num_actions * num_hands));
++    let cfv_actions = MutexLike::new(Scratch::with_capacity(num_actions * num_hands));
+ 
+     // if the `node` is chance
+     if node.is_chance() {
+@@ -169,9 +172,9 @@ fn solve_recursive<T: Game>(
+         #[cfg(feature = "custom-alloc")]
+         let mut cfreach_updated = Vec::with_capacity_in(cfreach.len(), StackAlloc);
+         #[cfg(not(feature = "custom-alloc"))]
+-        let mut cfreach_updated = Vec::with_capacity(cfreach.len());
++        let mut cfreach_updated = Scratch::with_capacity(cfreach.len());
+         mul_slice_scalar_uninit(
+-            cfreach_updated.spare_capacity_mut(),
++            &mut cfreach_updated.spare_capacity_mut()[..cfreach.len()],
+             cfreach,
+             1.0 / game.chance_factor(node) as f32,
+         );
+@@ -180,7 +183,7 @@ fn solve_recursive<T: Game>(
+         // compute the counterfactual values of each action
+         for_each_child(node, |action| {
+             solve_recursive(
+-                row_mut(cfv_actions.lock().spare_capacity_mut(), action, num_hands),
++                row_mut(&mut cfv_actions.lock().spare_capacity_mut()[..num_actions * num_hands], action, num_hands),
+                 game,
+                 &mut node.play(action),
+                 player,
+@@ -193,12 +196,12 @@ fn solve_recursive<T: Game>(
+         #[cfg(feature = "custom-alloc")]
+         let mut result_f64 = Vec::with_capacity_in(num_hands, StackAlloc);
+         #[cfg(not(feature = "custom-alloc"))]
+-        let mut result_f64 = Vec::with_capacity(num_hands);
++        let mut result_f64 = Scratch::with_capacity(num_hands);
+ 
+         // sum up the counterfactual values
+         let mut cfv_actions = cfv_actions.lock();
+         unsafe { cfv_actions.set_len(num_actions * num_hands) };
+-        sum_slices_f64_uninit(result_f64.spare_capacity_mut(), &cfv_actions);
++        sum_slices_f64_uninit(&mut result_f64.spare_capacity_mut()[..num_hands], &cfv_actions);
+         unsafe { result_f64.set_len(num_hands) };
+ 
+         // get information about isomorphic chances
+@@ -227,7 +230,7 @@ fn solve_recursive<T: Game>(
+         // compute the counterfactual values of each action
+         for_each_child(node, |action| {
+             solve_recursive(
+-                row_mut(cfv_actions.lock().spare_capacity_mut(), action, num_hands),
++                row_mut(&mut cfv_actions.lock().spare_capacity_mut()[..num_actions * num_hands], action, num_hands),
+                 game,
+                 &mut node.play(action),
+                 player,
+@@ -238,9 +241,9 @@ fn solve_recursive<T: Game>(
+ 
+         // compute the strategy by regret-maching algorithm
+         let mut strategy = if game.is_compression_enabled() {
+-            regret_matching_compressed(node.regrets_compressed(), num_actions)
++            regret_matching_compressed_node(game, node)
+         } else {
+-            regret_matching(node.regrets(), num_actions)
++            regret_matching(&dense_regrets(game, node), num_actions)
+         };
+ 
+         // node-locking
+@@ -250,13 +253,14 @@ fn solve_recursive<T: Game>(
+         // sum up the counterfactual values
+         let mut cfv_actions = cfv_actions.lock();
+         unsafe { cfv_actions.set_len(num_actions * num_hands) };
++        game.apply_incentive(node, player, cfreach, &mut cfv_actions);
+         let result = fma_slices_uninit(result, &strategy, &cfv_actions);
+ 
+         if game.is_compression_enabled() {
+             // update the cumulative strategy
+             let scale = node.strategy_scale();
+             let decoder = params.gamma_t * scale / u16::MAX as f32;
+-            let cum_strategy = node.strategy_compressed_mut();
++            let mut cum_strategy = dense_strategy_compressed_mut(game, node);
+ 
+             strategy.iter_mut().zip(&*cum_strategy).for_each(|(x, y)| {
+                 *x += (*y as f32) * decoder;
+@@ -270,14 +274,15 @@ fn solve_recursive<T: Game>(
+                 })
+             }
+ 
+-            let new_scale = encode_unsigned_slice(cum_strategy, &strategy);
++            let new_scale = encode_unsigned_slice(&mut cum_strategy, &strategy);
++            drop(cum_strategy);
+             node.set_strategy_scale(new_scale);
+ 
+             // update the cumulative regret
+             let scale = node.regret_scale();
+             let alpha_decoder = params.alpha_t * scale / i16::MAX as f32;
+             let beta_decoder = params.beta_t * scale / i16::MAX as f32;
+-            let cum_regret = node.regrets_compressed_mut();
++            let mut cum_regret = dense_regrets_compressed_mut(game, node);
+ 
+             cfv_actions.iter_mut().zip(&*cum_regret).for_each(|(x, y)| {
+                 *x += *y as f32 * if *y >= 0 { alpha_decoder } else { beta_decoder };
+@@ -295,19 +300,22 @@ fn solve_recursive<T: Game>(
+                 })
+             }
+ 
+-            let new_scale = encode_signed_slice(cum_regret, &cfv_actions);
++            let new_scale = encode_signed_slice(&mut cum_regret, &cfv_actions);
++            drop(cum_regret);
+             node.set_regret_scale(new_scale);
+         } else {
+             // update the cumulative strategy
+             let gamma = params.gamma_t;
+-            let cum_strategy = node.strategy_mut();
++            let mut cum_strategy = dense_strategy_mut(game, node);
+             cum_strategy.iter_mut().zip(&strategy).for_each(|(x, y)| {
+                 *x = *x * gamma + *y;
+             });
+ 
++            drop(cum_strategy);
++
+             // update the cumulative regret
+             let (alpha, beta) = (params.alpha_t, params.beta_t);
+-            let cum_regret = node.regrets_mut();
++            let mut cum_regret = dense_regrets_mut(game, node);
+             cum_regret.iter_mut().zip(&*cfv_actions).for_each(|(x, y)| {
+                 let coef = if x.is_sign_positive() { alpha } else { beta };
+                 *x = *x * coef + *y;
+@@ -321,9 +329,9 @@ fn solve_recursive<T: Game>(
+     else {
+         // compute the strategy by regret-matching algorithm
+         let mut cfreach_actions = if game.is_compression_enabled() {
+-            regret_matching_compressed(node.regrets_compressed(), num_actions)
++            regret_matching_compressed_node(game, node)
+         } else {
+-            regret_matching(node.regrets(), num_actions)
++            regret_matching(&dense_regrets(game, node), num_actions)
+         };
+ 
+         // node-locking
+@@ -339,7 +347,7 @@ fn solve_recursive<T: Game>(
+         // compute the counterfactual values of each action
+         for_each_child(node, |action| {
+             solve_recursive(
+-                row_mut(cfv_actions.lock().spare_capacity_mut(), action, num_hands),
++                row_mut(&mut cfv_actions.lock().spare_capacity_mut()[..num_actions * num_hands], action, num_hands),
+                 game,
+                 &mut node.play(action),
+                 player,
+@@ -360,7 +368,7 @@ fn solve_recursive<T: Game>(
+ #[inline]
+ fn regret_matching(regret: &[f32], num_actions: usize) -> Vec<f32, StackAlloc> {
+     let mut strategy = Vec::with_capacity_in(regret.len(), StackAlloc);
+-    let uninit = strategy.spare_capacity_mut();
++    let uninit = &mut strategy.spare_capacity_mut()[..regret.len()];
+     uninit.iter_mut().zip(regret).for_each(|(s, r)| {
+         s.write(max(*r, 0.0));
+     });
+@@ -368,7 +376,7 @@ fn regret_matching(regret: &[f32], num_actions: usize) -> Vec<f32, StackAlloc> {
+ 
+     let row_size = regret.len() / num_actions;
+     let mut denom = Vec::with_capacity_in(row_size, StackAlloc);
+-    sum_slices_uninit(denom.spare_capacity_mut(), &strategy);
++    sum_slices_uninit(&mut denom.spare_capacity_mut()[..row_size], &strategy);
+     unsafe { denom.set_len(row_size) };
+ 
+     let default = 1.0 / num_actions as f32;
+@@ -382,17 +390,17 @@ fn regret_matching(regret: &[f32], num_actions: usize) -> Vec<f32, StackAlloc> {
+ /// Computes the strategy by regret-matching algorithm.
+ #[cfg(not(feature = "custom-alloc"))]
+ #[inline]
+-fn regret_matching(regret: &[f32], num_actions: usize) -> Vec<f32> {
+-    let mut strategy = Vec::with_capacity(regret.len());
+-    let uninit = strategy.spare_capacity_mut();
++fn regret_matching(regret: &[f32], num_actions: usize) -> Scratch<f32> {
++    let mut strategy = Scratch::with_capacity(regret.len());
++    let uninit = &mut strategy.spare_capacity_mut()[..regret.len()];
+     uninit.iter_mut().zip(regret).for_each(|(s, r)| {
+         s.write(max(*r, 0.0));
+     });
+     unsafe { strategy.set_len(regret.len()) };
+ 
+     let row_size = regret.len() / num_actions;
+-    let mut denom = Vec::with_capacity(row_size);
+-    sum_slices_uninit(denom.spare_capacity_mut(), &strategy);
++    let mut denom = Scratch::with_capacity(row_size);
++    sum_slices_uninit(&mut denom.spare_capacity_mut()[..row_size], &strategy);
+     unsafe { denom.set_len(row_size) };
+ 
+     let default = 1.0 / num_actions as f32;
+@@ -412,7 +420,7 @@ fn regret_matching_compressed(regret: &[i16], num_actions: usize) -> Vec<f32, St
+ 
+     let row_size = strategy.len() / num_actions;
+     let mut denom = Vec::with_capacity_in(row_size, StackAlloc);
+-    sum_slices_uninit(denom.spare_capacity_mut(), &strategy);
++    sum_slices_uninit(&mut denom.spare_capacity_mut()[..row_size], &strategy);
+     unsafe { denom.set_len(row_size) };
+ 
+     let default = 1.0 / num_actions as f32;
+@@ -423,16 +431,50 @@ fn regret_matching_compressed(regret: &[i16], num_actions: usize) -> Vec<f32, St
+     strategy
+ }
+ 
++// Keep the nightly allocator's established lifetimes and allocation path.
++#[cfg(feature = "custom-alloc")]
++#[inline]
++fn regret_matching_compressed_node<G: Game>(game: &G, node: &G::Node) -> Vec<f32, StackAlloc> {
++    regret_matching_compressed(&dense_regrets_compressed(game,node),node.num_actions())
++}
++
++/// Sparse nodes generate their required f32 strategy directly, avoiding an
++/// otherwise temporary full i16 view. Normalization is the same ordered
++/// sum/divide as regret_matching_compressed; dense nodes retain that path.
++#[cfg(not(feature = "custom-alloc"))]
++#[inline]
++fn regret_matching_compressed_node<G: Game>(game: &G, node: &G::Node) -> Scratch<f32> {
++    let actions=node.num_actions();
++    let hands=game.num_private_hands(node.player());
++    let indices=match game.storage_hand_indices(node,node.player()) {
++        Some(indices) if indices.len()<hands => indices,
++        _ => return regret_matching_compressed(node.regrets_compressed(),actions),
++    };
++    let len=actions*hands;
++    let mut strategy=Scratch::with_capacity(len);
++    positive_packed_regrets(node.regrets_compressed(),indices,hands,actions,
++        &mut strategy.spare_capacity_mut()[..len]);
++    // positive_packed_regrets initializes every logical entry before exposure.
++    unsafe {strategy.set_len(len)};
++
++    let mut denom=Scratch::with_capacity(hands);
++    sum_slices_uninit(&mut denom.spare_capacity_mut()[..hands],&strategy);
++    unsafe {denom.set_len(hands)};
++    let default=1.0/actions as f32;
++    strategy.chunks_exact_mut(hands).for_each(|row|div_slice(row,&denom,default));
++    strategy
++}
++
+ /// Computes the strategy by regret-matching algorithm.
+ #[cfg(not(feature = "custom-alloc"))]
+ #[inline]
+-fn regret_matching_compressed(regret: &[i16], num_actions: usize) -> Vec<f32> {
+-    let mut strategy = Vec::with_capacity(regret.len());
++fn regret_matching_compressed(regret: &[i16], num_actions: usize) -> Scratch<f32> {
++    let mut strategy = Scratch::with_capacity(regret.len());
+     strategy.extend(regret.iter().map(|&r| r.max(0) as f32));
+ 
+     let row_size = strategy.len() / num_actions;
+-    let mut denom = Vec::with_capacity(row_size);
+-    sum_slices_uninit(denom.spare_capacity_mut(), &strategy);
++    let mut denom = Scratch::with_capacity(row_size);
++    sum_slices_uninit(&mut denom.spare_capacity_mut()[..row_size], &strategy);
+     unsafe { denom.set_len(row_size) };
+ 
+     let default = 1.0 / num_actions as f32;
+diff --git a/src/solver_reference.rs b/src/solver_reference.rs
+new file mode 100644
+index 0000000..862f88c
+--- /dev/null
++++ b/src/solver_reference.rs
+@@ -0,0 +1,449 @@
++use crate::sparse_storage::*;
++use crate::interface::*;
++use crate::mutex_like::*;
++use crate::sliceop::*;
++use crate::utility::*;
++use std::io::{self, Write};
++use std::mem::MaybeUninit;
++
++#[cfg(feature = "custom-alloc")]
++use crate::alloc::*;
++
++struct DiscountParams {
++    alpha_t: f32,
++    beta_t: f32,
++    gamma_t: f32,
++}
++
++impl DiscountParams {
++    pub fn new(current_iteration: u32) -> Self {
++        // 0, 1, 4, 16, 64, 256, ...
++        let nearest_lower_power_of_4 = match current_iteration {
++            0 => 0,
++            x => 1 << ((x.leading_zeros() ^ 31) & !1),
++        };
++
++        let t_alpha = (current_iteration as i32 - 1).max(0) as f64;
++        let t_gamma = (current_iteration - nearest_lower_power_of_4) as f64;
++
++        let pow_alpha = t_alpha * t_alpha.sqrt();
++        let pow_gamma = (t_gamma / (t_gamma + 1.0)).powi(3);
++
++        Self {
++            alpha_t: (pow_alpha / (pow_alpha + 1.0)) as f32,
++            beta_t: 0.5,
++            gamma_t: pow_gamma as f32,
++        }
++    }
++}
++
++/// Performs Discounted CFR algorithm until the given number of iterations or exploitability is
++/// satisfied.
++///
++/// This method returns the exploitability of the obtained strategy.
++pub fn solve<T: Game>(
++    game: &mut T,
++    max_num_iterations: u32,
++    target_exploitability: f32,
++    print_progress: bool,
++) -> f32 {
++    if game.is_solved() {
++        panic!("Game is already solved");
++    }
++
++    if !game.is_ready() {
++        panic!("Game is not ready");
++    }
++
++    let mut root = game.root();
++    let mut exploitability = compute_exploitability(game);
++
++    if print_progress {
++        print!("iteration: 0 / {max_num_iterations} ");
++        print!("(exploitability = {exploitability:.4e})");
++        io::stdout().flush().unwrap();
++    }
++
++    for t in 0..max_num_iterations {
++        if exploitability <= target_exploitability {
++            break;
++        }
++
++        let params = DiscountParams::new(t);
++
++        // alternating updates
++        for player in 0..2 {
++            let mut result = Vec::with_capacity(game.num_private_hands(player));
++            solve_recursive(
++                result.spare_capacity_mut(),
++                game,
++                &mut root,
++                player,
++                game.initial_weights(player ^ 1),
++                &params,
++            );
++        }
++
++        if (t + 1) % 10 == 0 || t + 1 == max_num_iterations {
++            exploitability = compute_exploitability(game);
++        }
++
++        if print_progress {
++            print!("\riteration: {} / {} ", t + 1, max_num_iterations);
++            print!("(exploitability = {exploitability:.4e})");
++            io::stdout().flush().unwrap();
++        }
++    }
++
++    if print_progress {
++        println!();
++        io::stdout().flush().unwrap();
++    }
++
++    finalize(game);
++
++    exploitability
++}
++
++/// Proceeds Discounted CFR algorithm for one iteration.
++#[inline]
++pub fn solve_step<T: Game>(game: &T, current_iteration: u32) {
++    if game.is_solved() {
++        panic!("Game is already solved");
++    }
++
++    if !game.is_ready() {
++        panic!("Game is not ready");
++    }
++
++    let mut root = game.root();
++    let params = DiscountParams::new(current_iteration);
++
++    // alternating updates
++    for player in 0..2 {
++        let mut result = Vec::with_capacity(game.num_private_hands(player));
++        solve_recursive(
++            result.spare_capacity_mut(),
++            game,
++            &mut root,
++            player,
++            game.initial_weights(player ^ 1),
++            &params,
++        );
++    }
++}
++
++/// Recursively solves the counterfactual values.
++fn solve_recursive<T: Game>(
++    result: &mut [MaybeUninit<f32>],
++    game: &T,
++    node: &mut T::Node,
++    player: usize,
++    cfreach: &[f32],
++    params: &DiscountParams,
++) {
++    // return the counterfactual values when the `node` is terminal
++    if node.is_terminal() {
++        game.evaluate(result, node, player, cfreach);
++        return;
++    }
++
++    let num_actions = node.num_actions();
++    let num_hands = result.len();
++
++    // simply recurse when the number of actions is one
++    if num_actions == 1 && !node.is_chance() {
++        let child = &mut node.play(0);
++        solve_recursive(result, game, child, player, cfreach, params);
++        return;
++    }
++
++    // allocate memory for storing the counterfactual values
++    #[cfg(feature = "custom-alloc")]
++    let cfv_actions = MutexLike::new(Vec::with_capacity_in(num_actions * num_hands, StackAlloc));
++    #[cfg(not(feature = "custom-alloc"))]
++    let cfv_actions = MutexLike::new(Vec::with_capacity(num_actions * num_hands));
++
++    // if the `node` is chance
++    if node.is_chance() {
++        // update the reach probabilities
++        #[cfg(feature = "custom-alloc")]
++        let mut cfreach_updated = Vec::with_capacity_in(cfreach.len(), StackAlloc);
++        #[cfg(not(feature = "custom-alloc"))]
++        let mut cfreach_updated = Vec::with_capacity(cfreach.len());
++        mul_slice_scalar_uninit(
++            cfreach_updated.spare_capacity_mut(),
++            cfreach,
++            1.0 / game.chance_factor(node) as f32,
++        );
++        unsafe { cfreach_updated.set_len(cfreach.len()) };
++
++        // compute the counterfactual values of each action
++        for_each_child(node, |action| {
++            solve_recursive(
++                row_mut(cfv_actions.lock().spare_capacity_mut(), action, num_hands),
++                game,
++                &mut node.play(action),
++                player,
++                &cfreach_updated,
++                params,
++            );
++        });
++
++        // use 64-bit floating point values
++        #[cfg(feature = "custom-alloc")]
++        let mut result_f64 = Vec::with_capacity_in(num_hands, StackAlloc);
++        #[cfg(not(feature = "custom-alloc"))]
++        let mut result_f64 = Vec::with_capacity(num_hands);
++
++        // sum up the counterfactual values
++        let mut cfv_actions = cfv_actions.lock();
++        unsafe { cfv_actions.set_len(num_actions * num_hands) };
++        sum_slices_f64_uninit(result_f64.spare_capacity_mut(), &cfv_actions);
++        unsafe { result_f64.set_len(num_hands) };
++
++        // get information about isomorphic chances
++        let isomorphic_chances = game.isomorphic_chances(node);
++
++        // process isomorphic chances
++        for (i, &isomorphic_index) in isomorphic_chances.iter().enumerate() {
++            let swap_list = &game.isomorphic_swap(node, i)[player];
++            let tmp = row_mut(&mut cfv_actions, isomorphic_index as usize, num_hands);
++
++            apply_swap(tmp, swap_list);
++
++            result_f64.iter_mut().zip(&*tmp).for_each(|(r, &v)| {
++                *r += v as f64;
++            });
++
++            apply_swap(tmp, swap_list);
++        }
++
++        result.iter_mut().zip(&result_f64).for_each(|(r, &v)| {
++            r.write(v as f32);
++        });
++    }
++    // if the current player is `player`
++    else if node.player() == player {
++        // compute the counterfactual values of each action
++        for_each_child(node, |action| {
++            solve_recursive(
++                row_mut(cfv_actions.lock().spare_capacity_mut(), action, num_hands),
++                game,
++                &mut node.play(action),
++                player,
++                cfreach,
++                params,
++            );
++        });
++
++        // compute the strategy by regret-maching algorithm
++        let mut strategy = if game.is_compression_enabled() {
++            regret_matching_compressed(&dense_regrets_compressed(game, node), num_actions)
++        } else {
++            regret_matching(&dense_regrets(game, node), num_actions)
++        };
++
++        // node-locking
++        let locking = game.locking_strategy(node);
++        apply_locking_strategy(&mut strategy, locking);
++
++        // sum up the counterfactual values
++        let mut cfv_actions = cfv_actions.lock();
++        unsafe { cfv_actions.set_len(num_actions * num_hands) };
++        let result = fma_slices_uninit(result, &strategy, &cfv_actions);
++
++        if game.is_compression_enabled() {
++            // update the cumulative strategy
++            let scale = node.strategy_scale();
++            let decoder = params.gamma_t * scale / u16::MAX as f32;
++            let mut cum_strategy = dense_strategy_compressed_mut(game, node);
++
++            strategy.iter_mut().zip(&*cum_strategy).for_each(|(x, y)| {
++                *x += (*y as f32) * decoder;
++            });
++
++            if !locking.is_empty() {
++                strategy.iter_mut().zip(locking).for_each(|(d, s)| {
++                    if s.is_sign_positive() {
++                        *d = 0.0;
++                    }
++                })
++            }
++
++            let new_scale = encode_unsigned_slice(&mut cum_strategy, &strategy);
++            drop(cum_strategy);
++            node.set_strategy_scale(new_scale);
++
++            // update the cumulative regret
++            let scale = node.regret_scale();
++            let alpha_decoder = params.alpha_t * scale / i16::MAX as f32;
++            let beta_decoder = params.beta_t * scale / i16::MAX as f32;
++            let mut cum_regret = dense_regrets_compressed_mut(game, node);
++
++            cfv_actions.iter_mut().zip(&*cum_regret).for_each(|(x, y)| {
++                *x += *y as f32 * if *y >= 0 { alpha_decoder } else { beta_decoder };
++            });
++
++            cfv_actions.chunks_exact_mut(num_hands).for_each(|row| {
++                sub_slice(row, result);
++            });
++
++            if !locking.is_empty() {
++                cfv_actions.iter_mut().zip(locking).for_each(|(d, s)| {
++                    if s.is_sign_positive() {
++                        *d = 0.0;
++                    }
++                })
++            }
++
++            let new_scale = encode_signed_slice(&mut cum_regret, &cfv_actions);
++            drop(cum_regret);
++            node.set_regret_scale(new_scale);
++        } else {
++            // update the cumulative strategy
++            let gamma = params.gamma_t;
++            let mut cum_strategy = dense_strategy_mut(game, node);
++            cum_strategy.iter_mut().zip(&strategy).for_each(|(x, y)| {
++                *x = *x * gamma + *y;
++            });
++
++            drop(cum_strategy);
++
++            // update the cumulative regret
++            let (alpha, beta) = (params.alpha_t, params.beta_t);
++            let mut cum_regret = dense_regrets_mut(game, node);
++            cum_regret.iter_mut().zip(&*cfv_actions).for_each(|(x, y)| {
++                let coef = if x.is_sign_positive() { alpha } else { beta };
++                *x = *x * coef + *y;
++            });
++            cum_regret.chunks_exact_mut(num_hands).for_each(|row| {
++                sub_slice(row, result);
++            });
++        }
++    }
++    // if the current player is not `player`
++    else {
++        // compute the strategy by regret-matching algorithm
++        let mut cfreach_actions = if game.is_compression_enabled() {
++            regret_matching_compressed(&dense_regrets_compressed(game, node), num_actions)
++        } else {
++            regret_matching(&dense_regrets(game, node), num_actions)
++        };
++
++        // node-locking
++        let locking = game.locking_strategy(node);
++        apply_locking_strategy(&mut cfreach_actions, locking);
++
++        // update the reach probabilities
++        let row_size = cfreach.len();
++        cfreach_actions.chunks_exact_mut(row_size).for_each(|row| {
++            mul_slice(row, cfreach);
++        });
++
++        // compute the counterfactual values of each action
++        for_each_child(node, |action| {
++            solve_recursive(
++                row_mut(cfv_actions.lock().spare_capacity_mut(), action, num_hands),
++                game,
++                &mut node.play(action),
++                player,
++                row(&cfreach_actions, action, row_size),
++                params,
++            );
++        });
++
++        // sum up the counterfactual values
++        let mut cfv_actions = cfv_actions.lock();
++        unsafe { cfv_actions.set_len(num_actions * num_hands) };
++        sum_slices_uninit(result, &cfv_actions);
++    }
++}
++
++/// Computes the strategy by regret-matching algorithm.
++#[cfg(feature = "custom-alloc")]
++#[inline]
++fn regret_matching(regret: &[f32], num_actions: usize) -> Vec<f32, StackAlloc> {
++    let mut strategy = Vec::with_capacity_in(regret.len(), StackAlloc);
++    let uninit = strategy.spare_capacity_mut();
++    uninit.iter_mut().zip(regret).for_each(|(s, r)| {
++        s.write(max(*r, 0.0));
++    });
++    unsafe { strategy.set_len(regret.len()) };
++
++    let row_size = regret.len() / num_actions;
++    let mut denom = Vec::with_capacity_in(row_size, StackAlloc);
++    sum_slices_uninit(denom.spare_capacity_mut(), &strategy);
++    unsafe { denom.set_len(row_size) };
++
++    let default = 1.0 / num_actions as f32;
++    strategy.chunks_exact_mut(row_size).for_each(|row| {
++        div_slice(row, &denom, default);
++    });
++
++    strategy
++}
++
++/// Computes the strategy by regret-matching algorithm.
++#[cfg(not(feature = "custom-alloc"))]
++#[inline]
++fn regret_matching(regret: &[f32], num_actions: usize) -> Vec<f32> {
++    let mut strategy = Vec::with_capacity(regret.len());
++    let uninit = strategy.spare_capacity_mut();
++    uninit.iter_mut().zip(regret).for_each(|(s, r)| {
++        s.write(max(*r, 0.0));
++    });
++    unsafe { strategy.set_len(regret.len()) };
++
++    let row_size = regret.len() / num_actions;
++    let mut denom = Vec::with_capacity(row_size);
++    sum_slices_uninit(denom.spare_capacity_mut(), &strategy);
++    unsafe { denom.set_len(row_size) };
++
++    let default = 1.0 / num_actions as f32;
++    strategy.chunks_exact_mut(row_size).for_each(|row| {
++        div_slice(row, &denom, default);
++    });
++
++    strategy
++}
++
++/// Computes the strategy by regret-matching algorithm.
++#[cfg(feature = "custom-alloc")]
++#[inline]
++fn regret_matching_compressed(regret: &[i16], num_actions: usize) -> Vec<f32, StackAlloc> {
++    let mut strategy = Vec::with_capacity_in(regret.len(), StackAlloc);
++    strategy.extend(regret.iter().map(|&r| r.max(0) as f32));
++
++    let row_size = strategy.len() / num_actions;
++    let mut denom = Vec::with_capacity_in(row_size, StackAlloc);
++    sum_slices_uninit(denom.spare_capacity_mut(), &strategy);
++    unsafe { denom.set_len(row_size) };
++
++    let default = 1.0 / num_actions as f32;
++    strategy.chunks_exact_mut(row_size).for_each(|row| {
++        div_slice(row, &denom, default);
++    });
++
++    strategy
++}
++
++/// Computes the strategy by regret-matching algorithm.
++#[cfg(not(feature = "custom-alloc"))]
++#[inline]
++fn regret_matching_compressed(regret: &[i16], num_actions: usize) -> Vec<f32> {
++    let mut strategy = Vec::with_capacity(regret.len());
++    strategy.extend(regret.iter().map(|&r| r.max(0) as f32));
++
++    let row_size = strategy.len() / num_actions;
++    let mut denom = Vec::with_capacity(row_size);
++    sum_slices_uninit(denom.spare_capacity_mut(), &strategy);
++    unsafe { denom.set_len(row_size) };
++
++    let default = 1.0 / num_actions as f32;
++    strategy.chunks_exact_mut(row_size).for_each(|row| {
++        div_slice(row, &denom, default);
++    });
++
++    strategy
++}
+diff --git a/src/solver_scratch.rs b/src/solver_scratch.rs
+new file mode 100644
+index 0000000..e04ea9d
+--- /dev/null
++++ b/src/solver_scratch.rs
+@@ -0,0 +1,134 @@
++//! Owned scratch storage for DCFR. No TLS borrow survives a recursive call or Rayon join.
++//! Only idle buffers are cached; checked-out vectors have independent ownership.
++use std::{cell::RefCell, ops::{Deref, DerefMut}, slice};
++
++const F32_LIMIT: usize = 768 * 1024;
++const F64_LIMIT: usize = 256 * 1024;
++const MAX_ENTRIES: usize = 32;
++
++struct Pool<T> { buffers: Vec<Vec<T>>, bytes: usize }
++impl<T> Pool<T> {
++    const fn new() -> Self { Self { buffers: Vec::new(), bytes: 0 } }
++    fn take(&mut self, capacity: usize) -> Option<Vec<T>> {
++        // Exact capacities prevent a small recursive request from retaining an oversized buffer.
++        let index = self.buffers.iter().rposition(|v| v.capacity() == capacity)?;
++        let buffer = self.buffers.swap_remove(index);
++        self.bytes -= buffer.capacity() * std::mem::size_of::<T>();
++        Some(buffer)
++    }
++    fn put(&mut self, mut buffer: Vec<T>, limit: usize) {
++        buffer.clear();
++        let bytes = buffer.capacity().saturating_mul(std::mem::size_of::<T>());
++        if bytes == 0 || bytes > limit.saturating_sub(self.bytes) || self.buffers.len() >= MAX_ENTRIES { return; }
++        self.bytes += bytes;
++        self.buffers.push(buffer);
++    }
++}
++
++thread_local! {
++    static F32_POOL: RefCell<Pool<f32>> = RefCell::new(Pool::new());
++    static F64_POOL: RefCell<Pool<f64>> = RefCell::new(Pool::new());
++}
++
++pub(crate) trait ScratchFloat: Sized {
++    fn take(capacity: usize) -> Vec<Self>;
++    fn give(buffer: Vec<Self>);
++}
++macro_rules! cached_float {
++    ($ty:ty, $pool:ident, $limit:ident) => {
++        impl ScratchFloat for $ty {
++            #[inline]
++            fn take(capacity: usize) -> Vec<Self> {
++                $pool.try_with(|p| p.try_borrow_mut().ok().and_then(|mut p| p.take(capacity)))
++                    .ok().flatten().unwrap_or_else(|| Vec::with_capacity(capacity))
++            }
++            #[inline]
++            fn give(buffer: Vec<Self>) {
++                // During TLS destruction or unexpected reentry, free instead of panicking in Drop.
++                let _ = $pool.try_with(|p| {
++                    if let Ok(mut p) = p.try_borrow_mut() { p.put(buffer, $limit); }
++                });
++            }
++        }
++    };
++}
++cached_float!(f32, F32_POOL, F32_LIMIT);
++cached_float!(f64, F64_POOL, F64_LIMIT);
++
++pub(crate) struct Scratch<T: ScratchFloat>(Vec<T>);
++impl<T: ScratchFloat> Scratch<T> {
++    #[inline]
++    pub(crate) fn with_capacity(capacity: usize) -> Self { Self(T::take(capacity)) }
++}
++impl<T: ScratchFloat> Deref for Scratch<T> {
++    type Target = Vec<T>;
++    #[inline]
++    fn deref(&self) -> &Vec<T> { &self.0 }
++}
++impl<T: ScratchFloat> DerefMut for Scratch<T> {
++    #[inline]
++    fn deref_mut(&mut self) -> &mut Vec<T> { &mut self.0 }
++}
++impl<'a, T: ScratchFloat> IntoIterator for &'a Scratch<T> {
++    type Item = &'a T;
++    type IntoIter = slice::Iter<'a, T>;
++    fn into_iter(self) -> Self::IntoIter { self.0.iter() }
++}
++impl<T: ScratchFloat> Drop for Scratch<T> {
++    #[inline]
++    fn drop(&mut self) { T::give(std::mem::take(&mut self.0)); }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn exact_capacity_and_idle_bounds() {
++        let mut pool = Pool::<f32>::new();
++        pool.put(vec![1.0; 64], 1024);
++        assert!(pool.take(32).is_none());
++        let buffer = pool.take(64).unwrap();
++        assert_eq!(buffer.len(), 0);
++        assert_eq!(pool.bytes, 0);
++        pool.put(buffer, 1024);
++        pool.put(Vec::with_capacity(1024), 1024);
++        for _ in 0..100 { pool.put(Vec::with_capacity(1), 1024); }
++        assert!(pool.bytes <= 1024 && pool.buffers.len() <= MAX_ENTRIES);
++        assert_eq!(pool.bytes, pool.buffers.iter().map(|v| v.capacity() * 4).sum::<usize>());
++    }
++
++    #[test]
++    fn nested_owners_and_reuse_do_not_alias() {
++        let mut parent = Scratch::<f32>::with_capacity(203);
++        parent.resize(203, 7.0);
++        let pointer = parent.as_ptr();
++        {
++            let mut child = Scratch::<f32>::with_capacity(203);
++            child.resize(203, 9.0);
++            assert_ne!(pointer, child.as_ptr());
++            assert!(parent.iter().all(|&v| v == 7.0));
++        }
++        let mut child = Scratch::<f32>::with_capacity(203);
++        assert_eq!(child.len(), 0);
++        child.extend([2.0, 3.0]);
++        assert_eq!(child.as_slice(), &[2.0, 3.0]);
++        assert!(parent.iter().all(|&v| v == 7.0));
++        let mut wide = Scratch::<f64>::with_capacity(449);
++        wide.resize(449, 1.5);
++        assert_eq!(wide.len(), 449);
++    }
++
++    #[test]
++    fn borrowed_pool_drop_falls_back_without_panicking() {
++        let value = Scratch::<f32>::with_capacity(17);
++        F32_POOL.with(|pool| {
++            let _borrow = pool.borrow_mut();
++            let mut fallback = Scratch::<f32>::with_capacity(17);
++            fallback.extend([3.0, 4.0]);
++            assert_eq!(fallback.as_slice(), &[3.0, 4.0]);
++            drop(fallback);
++            drop(value);
++        });
++    }
++}
+diff --git a/src/solver_scratch_tests.rs b/src/solver_scratch_tests.rs
+new file mode 100644
+index 0000000..08dd5d0
+--- /dev/null
++++ b/src/solver_scratch_tests.rs
+@@ -0,0 +1,317 @@
++//! Numerical equivalence of scratch reuse against the frozen, pre-optimization DCFR.
++//!
++//! The reference is compiled only in tests. This is an implementation regression,
++//! not a second poker evaluator or an independent proof of equilibrium correctness.
++//! Every compared buffer is initialized by allocate_memory before any read.
++
++use crate::*;
++
++#[path = "solver_reference.rs"]
++#[allow(dead_code)]
++mod reference;
++
++#[derive(Default, Debug)]
++struct ComparedNodes {
++    decision: usize,
++    chance: usize,
++    terminal: usize,
++    isomorphic: usize,
++    locked: usize,
++}
++
++fn equal_floats(a: &[f32], b: &[f32], label: &str) {
++    assert_eq!(a.len(), b.len(), "{label}: length");
++    for (index, (&x, &y)) in a.iter().zip(b).enumerate() {
++        assert!(x.is_finite() && y.is_finite(), "{label}[{index}]: nonfinite {x}/{y}");
++        assert_eq!(x.to_bits(), y.to_bits(), "{label}[{index}]: {x}/{y}");
++    }
++}
++
++fn compare_nodes(
++    a: &PostFlopGame,
++    b: &PostFlopGame,
++    left: &PostFlopNode,
++    right: &PostFlopNode,
++    path: &mut Vec<usize>,
++    counts: &mut ComparedNodes,
++) {
++    assert_eq!(left.is_terminal(), right.is_terminal(), "{path:?}");
++    assert_eq!(left.is_chance(), right.is_chance(), "{path:?}");
++    assert_eq!(left.num_actions(), right.num_actions(), "{path:?}");
++    if left.is_terminal() {
++        counts.terminal += 1;
++        // Terminal nodes deliberately have null storage pointers. Do not ask
++        // for even an empty storage slice, because from_raw_parts forbids null.
++        return;
++    }
++    let compressed = a.is_compression_enabled();
++    if left.is_chance() {
++        counts.chance += 1;
++        counts.isomorphic += a.isomorphic_chances(left).len();
++        assert_eq!(a.isomorphic_chances(left), b.isomorphic_chances(right));
++        assert_eq!(left.cfvalue_storage_player(), right.cfvalue_storage_player());
++        if compressed {
++            assert_eq!(&*dense_cfvalues_chance_compressed(a, left), &*dense_cfvalues_chance_compressed(b, right), "chance CFV {path:?}");
++            equal_floats(&[left.cfvalue_chance_scale()], &[right.cfvalue_chance_scale()], "chance scale");
++        } else {
++            equal_floats(&*dense_cfvalues_chance(a, left), &*dense_cfvalues_chance(b, right), "chance CFV");
++        }
++    } else {
++        counts.decision += 1;
++        assert_eq!(left.player(), right.player(), "{path:?}");
++        if !a.locking_strategy(left).is_empty() {
++            counts.locked += 1;
++        }
++        equal_floats(a.locking_strategy(left), b.locking_strategy(right), "lock");
++        if compressed {
++            assert_eq!(&*dense_strategy_compressed(a, left), &*dense_strategy_compressed(b, right), "strategy {path:?}");
++            // This same storage is regrets before finalize and action CFVs
++            // after finalize; both phases are compared by the caller.
++            assert_eq!(&*dense_regrets_compressed(a, left), &*dense_regrets_compressed(b, right), "regrets/CFV {path:?}");
++            equal_floats(&[left.strategy_scale(), left.regret_scale()], &[right.strategy_scale(), right.regret_scale()], "strategy/regret scales");
++        } else {
++            equal_floats(&*dense_strategy(a, left), &*dense_strategy(b, right), "strategy");
++            equal_floats(&*dense_regrets(a, left), &*dense_regrets(b, right), "regrets/CFV");
++        }
++        assert_eq!(left.has_cfvalues_ip(), right.has_cfvalues_ip());
++        if left.has_cfvalues_ip() {
++            if compressed {
++                assert_eq!(&*dense_cfvalues_ip_compressed(a, left), &*dense_cfvalues_ip_compressed(b, right), "IP CFV {path:?}");
++                equal_floats(&[left.cfvalue_ip_scale()], &[right.cfvalue_ip_scale()], "IP CFV scale");
++            } else {
++                equal_floats(&*dense_cfvalues_ip(a, left), &*dense_cfvalues_ip(b, right), "IP CFV");
++            }
++        }
++    }
++    for action in left.action_indices() {
++        path.push(action);
++        compare_nodes(a, b, &left.play(action), &right.play(action), path, counts);
++        path.pop();
++    }
++}
++
++fn compare_games(a: &PostFlopGame, b: &PostFlopGame) -> ComparedNodes {
++    assert_eq!(a.is_compression_enabled(), b.is_compression_enabled());
++    let mut counts = ComparedNodes::default();
++    compare_nodes(a, b, &a.root(), &b.root(), &mut Vec::new(), &mut counts);
++    counts
++}
++
++fn fixture(street: BoardState, compressed: bool, expanded_and_locked: bool) -> PostFlopGame {
++    fixture_storage(street, compressed, expanded_and_locked, false)
++}
++
++fn fixture_storage(street: BoardState, compressed: bool, expanded_and_locked: bool, sparse: bool) -> PostFlopGame {
++    let cards = CardConfig {
++        // Unequal hand counts and fractional weights stress reused scratch
++        // lengths. Monotone flop + suit-symmetric ranges exercise isomorphism.
++        range: ["AKs:0.7,QQ".parse().unwrap(), "QJs,KTs:0.3".parse().unwrap()],
++        flop: flop_from_str("2c3c4c").unwrap(),
++        turn: if street >= BoardState::Turn { card_from_str("7c").unwrap() } else { NOT_DEALT },
++        river: if street == BoardState::River { card_from_str("9h").unwrap() } else { NOT_DEALT },
++    };
++    let small_sizes: BetSizeOptions = ("50%,a", "2x").try_into().unwrap();
++    let river_sizes: BetSizeOptions = if street == BoardState::River {
++        ("25%,50%,100%", "2x").try_into().unwrap()
++    } else {
++        small_sizes.clone()
++    };
++    let tree = ActionTree::new(TreeConfig {
++        initial_state: street,
++        starting_pot: 20,
++        effective_stack: if street == BoardState::River { 60 } else { 12 },
++        flop_bet_sizes: [small_sizes.clone(), small_sizes.clone()],
++        turn_bet_sizes: [small_sizes.clone(), small_sizes],
++        river_bet_sizes: [river_sizes.clone(), river_sizes],
++        add_allin_threshold: 0.0,
++        force_allin_threshold: 0.0,
++        merging_threshold: 0.0,
++        ..Default::default()
++    }).unwrap();
++    let mut game = PostFlopGame::prepare_config(cards, tree, expanded_and_locked).unwrap();
++    game.set_sparse_storage(sparse).unwrap();
++    let plan=game.memory_plan(1);
++    game.build_prepared().unwrap();
++    assert_eq!(game.memory_usage().1, plan[0]+plan[4]+2*(2*plan[1]+plan[2]+plan[3]));
++    game.allocate_memory(compressed);
++    assert_ne!(game.num_private_hands(0), game.num_private_hands(1));
++    if expanded_and_locked {
++        // Root pure check leaves all aggressive branches at zero reach for
++        // OOP. They remain allocated and traversed: scratch must not contain
++        // stale values for those off-path branches or blocked future boards.
++        let hands = game.num_private_hands(0);
++        let actions = game.available_actions().len();
++        assert!(actions >= 3);
++        let mut lock = vec![0.0; actions * hands];
++        lock[..hands].fill(1.0);
++        game.lock_current_strategy(&lock);
++        // After check, mix IP's first two actions for half its combinations;
++        // leave the other half unlocked (-1 after lock API normalization).
++        game.play(0);
++        let hands = game.num_private_hands(1);
++        let actions = game.available_actions().len();
++        let mut lock = vec![0.0; actions * hands];
++        for hand in 0..hands / 2 {
++            lock[hand] = 0.375;
++            lock[hands + hand] = 0.625;
++        }
++        game.lock_current_strategy(&lock);
++        game.back_to_root();
++    }
++    game
++}
++
++fn compare_ev(a: &PostFlopGame, b: &PostFlopGame) {
++    equal_floats(&compute_current_ev(a), &compute_current_ev(b), "current EV");
++    equal_floats(&compute_mes_ev(a), &compute_mes_ev(b), "MES EV");
++    equal_floats(&[compute_exploitability(a)], &[compute_exploitability(b)], "exploitability");
++}
++
++#[cfg(feature = "rayon")]
++fn run_in_pool<T: Send>(pool: &rayon::ThreadPool, task: impl FnOnce() -> T + Send) -> T {
++    pool.install(task)
++}
++
++fn equivalence_case(street: BoardState, compressed: bool, locked: bool, threads: usize, iterations: &[u32]) {
++    let mut old = fixture(street, compressed, locked);
++    let mut new = fixture(street, compressed, locked);
++    #[cfg(feature = "rayon")]
++    let old_pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
++    #[cfg(feature = "rayon")]
++    let new_pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
++    let initial = compare_games(&old, &new);
++    assert!(initial.decision > 0 && initial.terminal > 0);
++    if street < BoardState::River {
++        assert!(initial.chance > 0);
++        assert_eq!(initial.isomorphic > 0, !locked);
++    }
++    assert_eq!(initial.locked, if locked { 2 } else { 0 });
++    for &iteration in iterations {
++        #[cfg(feature = "rayon")]
++        {
++            run_in_pool(&old_pool, || reference::solve_step(&old, iteration));
++            run_in_pool(&new_pool, || crate::solve_step(&new, iteration));
++        }
++        #[cfg(not(feature = "rayon"))]
++        {
++            reference::solve_step(&old, iteration);
++            crate::solve_step(&new, iteration);
++        }
++        // Compare raw words every update; a small EV delta cannot hide an
++        // altered regret, quantization scale, or strategy accumulation path.
++        compare_games(&old, &new);
++        if iteration <= 4 || iteration.is_power_of_two() || Some(&iteration) == iterations.last() {
++            compare_ev(&old, &new);
++        }
++    }
++    finalize(&mut old);
++    finalize(&mut new);
++    compare_games(&old, &new);
++    compare_ev(&old, &new);
++    old.cache_normalized_weights();
++    new.cache_normalized_weights();
++    for player in 0..2 {
++        equal_floats(&old.expected_values(player), &new.expected_values(player), "root per-combo EV");
++        equal_floats(&old.equity(player), &new.equity(player), "root per-combo equity");
++    }
++    equal_floats(&old.strategy(), &new.strategy(), "interpreted root strategy");
++    eprintln!("scratch equivalence {street:?} compressed={compressed} locked/expanded={locked} threads={threads} updates={} nodes={initial:?}", iterations.len());
++}
++
++#[test]
++fn dcfr_scratch_river_contiguous_through_1024_is_bit_exact() {
++    // Genuine contiguous DCFR trajectories, not synthetic jumps, through all
++    // average-strategy reset boundaries up to t=1024. River keeps this small.
++    let iterations: Vec<u32> = (0..1027).collect();
++    for compressed in [false, true] {
++        for locked in [false, true] {
++            equivalence_case(BoardState::River, compressed, locked, if locked { 4 } else { 1 }, &iterations);
++        }
++    }
++}
++
++fn sampled_boundaries() -> Vec<u32> {
++    let mut iterations: Vec<u32> = (0..20).collect();
++    // These jumps test the exact discount parameters around later boundaries;
++    // they are NOT a claim of 1027 consecutive Flop or Turn iterations.
++    iterations.extend([63, 64, 65, 255, 256, 257, 1023, 1024, 1025]);
++    iterations
++}
++
++#[test]
++fn dcfr_scratch_turn_chance_locks_and_zero_reach_are_bit_exact() {
++    for compressed in [false, true] {
++        for locked in [false, true] {
++            equivalence_case(BoardState::Turn, compressed, locked, 1, &sampled_boundaries());
++        }
++    }
++}
++
++#[test]
++fn dcfr_scratch_flop_isomorphic_and_expanded_parallel_are_bit_exact() {
++    for compressed in [false, true] {
++        for locked in [false, true] {
++            equivalence_case(BoardState::Flop, compressed, locked, 4, &sampled_boundaries());
++        }
++    }
++}
++
++
++#[test]
++fn sparse_cfr_matches_dense_words_scales_and_evs() {
++    for street in [BoardState::Flop, BoardState::Turn, BoardState::River] {
++        for compressed in [false,true] {
++            let mut dense=fixture_storage(street,compressed,false,false);
++            let mut sparse=fixture_storage(street,compressed,false,true);
++            assert_eq!(dense.num_private_hands(0),sparse.num_private_hands(0));
++            if street<BoardState::River {assert!(sparse.memory_usage().1<dense.memory_usage().1);}
++            compare_games(&dense,&sparse);
++            // Continuous steps plus actual discount/reset parameters at boundaries.
++            for t in (0..20).chain([63,64,65,255,256,257,1023,1024,1025]) {
++                solve_step(&dense,t);solve_step(&sparse,t);
++                compare_games(&dense,&sparse);
++            }
++            compare_ev(&dense,&sparse);
++            finalize(&mut dense);finalize(&mut sparse);
++            compare_games(&dense,&sparse);
++            compare_ev(&dense,&sparse);
++            dense.cache_normalized_weights();sparse.cache_normalized_weights();
++            equal_floats(&dense.expected_values_detail(0),&sparse.expected_values_detail(0),"sparse node EV");
++            equal_floats(&dense.strategy(),&sparse.strategy(),"sparse node strategy");
++        }
++    }
++}
++
++#[test]
++fn sparse_direct_regret_input_matches_old_sparse_dcfr_at_discount_boundaries() {
++    // The frozen reference still expands packed i16 before converting to f32.
++    // Both sides use sparse storage, so this isolates the new initialization
++    // path from physical-layout differences. This is implementation equivalence,
++    // not an independent terminal evaluator.
++    for street in [BoardState::Flop,BoardState::Turn,BoardState::River] {
++        for threads in [1,4] {
++            let mut old=fixture_storage(street,true,false,true);
++            let mut new=fixture_storage(street,true,false,true);
++            #[cfg(feature="rayon")]
++            let pool=rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
++            for iteration in sampled_boundaries() {
++                #[cfg(feature="rayon")]
++                pool.install(|| {
++                    reference::solve_step(&old,iteration);
++                    solve_step(&new,iteration);
++                });
++                #[cfg(not(feature="rayon"))]
++                {
++                    let _=threads;
++                    reference::solve_step(&old,iteration);
++                    solve_step(&new,iteration);
++                }
++                compare_games(&old,&new);
++            }
++            compare_ev(&old,&new);
++            finalize(&mut old);finalize(&mut new);
++            compare_games(&old,&new);
++            compare_ev(&old,&new);
++        }
++    }
++}
+diff --git a/src/sparse_storage.rs b/src/sparse_storage.rs
+new file mode 100644
+index 0000000..ba004a9
+--- /dev/null
++++ b/src/sparse_storage.rs
+@@ -0,0 +1,380 @@
++//! Dense logical views over legal-hand sparse physical storage.
++//!
++//! Every sparse row retains one ghost value for all board-conflicting hands.
++//! In unlocked CFR those entries are identical, including cumulative strategy;
++//! retaining the ghost therefore preserves the original quantization scale.
++//! Writers still quantize the complete dense input before this module scatters
++//! it. After a final opponent policy replaces CFR state, invalid-hand entries
++//! may differ: only their first value is retained, never any legal-hand value.
++//! Such final policy state must not subsequently be used to resume CFR.
++
++use crate::interface::{Game, GameNode};
++use std::{cell::RefCell, fmt, mem::{self, MaybeUninit}, ops::{Deref, DerefMut}};
++
++const MAX_IDLE_BYTES: usize = 1024 * 1024;
++const MAX_IDLE_BUFFERS: usize = 64;
++
++#[derive(Default)]
++struct Pools {
++    floats: Vec<Vec<f32>>,
++    unsigned: Vec<Vec<u16>>,
++    signed: Vec<Vec<i16>>,
++    bytes: usize,
++}
++
++thread_local! {
++    static POOLS: RefCell<Pools> = RefCell::new(Pools::default());
++}
++
++mod sealed {
++    pub trait Sealed {}
++    impl Sealed for f32 {}
++    impl Sealed for u16 {}
++    impl Sealed for i16 {}
++}
++
++/// Storage word supported by the bounded dense-view scratch pool.
++#[doc(hidden)]
++pub trait StorageValue: sealed::Sealed + Copy + Default + 'static {
++    #[doc(hidden)]
++    fn take_buffer(len: usize) -> Vec<Self>;
++    #[doc(hidden)]
++    fn recycle_buffer(buffer: Vec<Self>);
++}
++
++macro_rules! storage_value {
++    ($ty:ty, $field:ident) => {
++        impl StorageValue for $ty {
++            fn take_buffer(len: usize) -> Vec<Self> {
++                let pooled = POOLS.try_with(|pool| {
++                    let mut pool = pool.try_borrow_mut().ok()?;
++                    let index = pool.$field.iter().position(|buffer| buffer.capacity() == len)?;
++                    let buffer = pool.$field.swap_remove(index);
++                    pool.bytes -= buffer.capacity() * mem::size_of::<Self>();
++                    Some(buffer)
++                }).ok().flatten();
++                let mut buffer = pooled.unwrap_or_else(|| Vec::with_capacity(len));
++                buffer.resize(len, Self::default());
++                buffer
++            }
++
++            fn recycle_buffer(buffer: Vec<Self>) {
++                let bytes = buffer.capacity() * mem::size_of::<Self>();
++                if bytes == 0 || bytes > MAX_IDLE_BYTES { return; }
++                // Preserve initialized length. An exact-capacity checkout can
++                // then skip resize's zero fill; expand overwrites every element
++                // with its row ghost and all legal-hand values before exposure.
++                // An active checkout owns its buffer; no pool borrow survives
++                // recursion or Rayon work. TLS teardown/borrow conflicts free
++                // the buffer normally instead of panicking or retaining it.
++                let _ = POOLS.try_with(move |pool| {
++                    if let Ok(mut pool) = pool.try_borrow_mut() {
++                        let count = pool.floats.len() + pool.unsigned.len() + pool.signed.len();
++                        if pool.bytes + bytes <= MAX_IDLE_BYTES && count < MAX_IDLE_BUFFERS {
++                            pool.bytes += bytes;
++                            pool.$field.push(buffer);
++                        }
++                    }
++                });
++            }
++        }
++    }
++}
++storage_value!(f32, floats);
++storage_value!(u16, unsigned);
++storage_value!(i16, signed);
++
++struct Buffer<T: StorageValue>(Vec<T>);
++impl<T: StorageValue> Drop for Buffer<T> {
++    fn drop(&mut self) { T::recycle_buffer(mem::take(&mut self.0)); }
++}
++
++enum ReadInner<'a, T: StorageValue> {
++    Borrowed(&'a [T]),
++    Expanded(Buffer<T>),
++}
++
++/// Read-only dense hand/action ordering. A dense game is borrowed without copying.
++pub struct StorageRead<'a, T: StorageValue>(ReadInner<'a, T>);
++
++impl<T: StorageValue> Deref for StorageRead<'_, T> {
++    type Target = [T];
++    fn deref(&self) -> &[T] {
++        match &self.0 { ReadInner::Borrowed(values) => values, ReadInner::Expanded(values) => &values.0 }
++    }
++}
++impl<T: StorageValue + fmt::Debug> fmt::Debug for StorageRead<'_, T> {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.deref().fmt(f) }
++}
++
++enum WriteInner<'a, T: StorageValue> {
++    Borrowed(&'a mut [T]),
++    Expanded {
++        packed: &'a mut [T],
++        indices: &'a [u16],
++        hands: usize,
++        first_invalid: usize,
++        dense: Buffer<T>,
++    },
++}
++
++/// Mutable dense view. Dropping it writes every legal hand and its row's ghost
++/// back to the uniquely borrowed packed slice. Drop this guard before updating
++/// other node fields such as its compression scale.
++pub struct StorageWrite<'a, T: StorageValue>(WriteInner<'a, T>);
++
++impl<T: StorageValue> Deref for StorageWrite<'_, T> {
++    type Target = [T];
++    fn deref(&self) -> &[T] {
++        match &self.0 { WriteInner::Borrowed(values) => values, WriteInner::Expanded { dense, .. } => &dense.0 }
++    }
++}
++impl<T: StorageValue> DerefMut for StorageWrite<'_, T> {
++    fn deref_mut(&mut self) -> &mut [T] {
++        match &mut self.0 { WriteInner::Borrowed(values) => values, WriteInner::Expanded { dense, .. } => &mut dense.0 }
++    }
++}
++impl<T: StorageValue + fmt::Debug> fmt::Debug for StorageWrite<'_, T> {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.deref().fmt(f) }
++}
++impl<T: StorageValue> Drop for StorageWrite<'_, T> {
++    fn drop(&mut self) {
++        if let WriteInner::Expanded { packed, indices, hands, first_invalid, dense } = &mut self.0 {
++            let width = indices.len() + 1;
++            for (destination, source) in packed.chunks_exact_mut(width).zip(dense.0.chunks_exact(*hands)) {
++                for (value, &index) in destination.iter_mut().zip(indices.iter()) {
++                    *value = source[index as usize];
++                }
++                destination[indices.len()] = source[*first_invalid];
++            }
++        }
++    }
++}
++
++fn expand<T: StorageValue>(packed: &[T], indices: &[u16], hands: usize, rows: usize) -> Buffer<T> {
++    let width = indices.len() + 1;
++    assert_eq!(packed.len(), rows * width, "sparse physical storage shape mismatch");
++    debug_assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
++    debug_assert!(indices.iter().all(|&index| (index as usize) < hands));
++    let mut dense = Buffer(T::take_buffer(rows * hands));
++    for (source, destination) in packed.chunks_exact(width).zip(dense.0.chunks_exact_mut(hands)) {
++        destination.fill(source[indices.len()]);
++        for (&value, &index) in source.iter().zip(indices) { destination[index as usize] = value; }
++    }
++    dense
++}
++
++/// Initializes the full logical f32 regret-matching input directly from packed
++/// i16 rows. This replaces expand-to-i16 followed by positive conversion; it
++/// does not change which hands enter normalization or their action ordering.
++/// Every output cell is initialized, including all copies of the row's ghost.
++#[inline]
++pub(crate) fn positive_packed_regrets(
++    packed: &[i16], indices: &[u16], hands: usize, rows: usize,
++    output: &mut [MaybeUninit<f32>],
++) {
++    assert!(indices.len() < hands, "packed regret input needs a ghost column");
++    let width = indices.len() + 1;
++    assert_eq!(packed.len(), rows * width, "packed regret shape mismatch");
++    assert_eq!(output.len(), rows * hands, "logical regret shape mismatch");
++    debug_assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
++    for (source, destination) in packed.chunks_exact(width).zip(output.chunks_exact_mut(hands)) {
++        destination.fill(MaybeUninit::new(source[indices.len()].max(0) as f32));
++        for (&value, &index) in source.iter().zip(indices) {
++            destination[index as usize].write(value.max(0) as f32);
++        }
++    }
++}
++
++fn read_view<'a, T: StorageValue>(packed: &'a [T], indices: Option<&[u16]>, hands: usize, rows: usize) -> StorageRead<'a, T> {
++    match indices {
++        Some(indices) if indices.len() < hands && !packed.is_empty() => {
++            StorageRead(ReadInner::Expanded(expand(packed, indices, hands, rows)))
++        }
++        _ => StorageRead(ReadInner::Borrowed(packed)),
++    }
++}
++
++fn write_view<'a, T: StorageValue>(packed: &'a mut [T], indices: Option<&'a [u16]>, hands: usize, rows: usize) -> StorageWrite<'a, T> {
++    match indices {
++        Some(indices) if indices.len() < hands && !packed.is_empty() => {
++            let first_invalid = indices.iter().enumerate().find_map(|(i, &index)| (i != index as usize).then_some(i)).unwrap_or(indices.len());
++            let dense = expand(packed, indices, hands, rows);
++            StorageWrite(WriteInner::Expanded { packed, indices, hands, first_invalid, dense })
++        }
++        _ => StorageWrite(WriteInner::Borrowed(packed)),
++    }
++}
++
++macro_rules! action_views {
++    ($read:ident, $write:ident, $raw_read:ident, $raw_write:ident, $ty:ty) => {
++        #[doc = "Returns dense action-major storage in the unchanged private-hand ordering."]
++        #[inline]
++        pub fn $read<'a, G: Game>(game: &'a G, node: &'a G::Node) -> StorageRead<'a, $ty> {
++            let player = node.player();
++            read_view(node.$raw_read(), game.storage_hand_indices(node, player), game.num_private_hands(player), node.num_actions())
++        }
++        #[doc = "Returns mutable dense action-major storage; drop before changing the node's scale."]
++        #[inline]
++        pub fn $write<'a, G: Game>(game: &'a G, node: &'a mut G::Node) -> StorageWrite<'a, $ty> {
++            let player = node.player();
++            let rows = node.num_actions();
++            let indices = game.storage_hand_indices(node, player);
++            write_view(node.$raw_write(), indices, game.num_private_hands(player), rows)
++        }
++    }
++}
++action_views!(dense_strategy, dense_strategy_mut, strategy, strategy_mut, f32);
++action_views!(dense_regrets, dense_regrets_mut, regrets, regrets_mut, f32);
++action_views!(dense_cfvalues, dense_cfvalues_mut, cfvalues, cfvalues_mut, f32);
++action_views!(dense_strategy_compressed, dense_strategy_compressed_mut, strategy_compressed, strategy_compressed_mut, u16);
++action_views!(dense_regrets_compressed, dense_regrets_compressed_mut, regrets_compressed, regrets_compressed_mut, i16);
++action_views!(dense_cfvalues_compressed, dense_cfvalues_compressed_mut, cfvalues_compressed, cfvalues_compressed_mut, i16);
++
++fn ip_player<N: GameNode>(_: &N) -> usize { 1 }
++fn chance_player<N: GameNode>(node: &N) -> usize { node.cfvalue_storage_player().unwrap_or(0) }
++
++macro_rules! single_views {
++    ($read:ident, $write:ident, $raw_read:ident, $raw_write:ident, $ty:ty, $player:ident) => {
++        #[doc = "Returns a dense single-player counterfactual-value row."]
++        #[inline]
++        pub fn $read<'a, G: Game>(game: &'a G, node: &'a G::Node) -> StorageRead<'a, $ty> {
++            let player = $player(node);
++            read_view(node.$raw_read(), game.storage_hand_indices(node, player), game.num_private_hands(player), 1)
++        }
++        #[doc = "Returns a mutable dense single-player counterfactual-value row."]
++        #[inline]
++        pub fn $write<'a, G: Game>(game: &'a G, node: &'a mut G::Node) -> StorageWrite<'a, $ty> {
++            let player = $player(&*node);
++            let indices = game.storage_hand_indices(node, player);
++            write_view(node.$raw_write(), indices, game.num_private_hands(player), 1)
++        }
++    }
++}
++single_views!(dense_cfvalues_ip, dense_cfvalues_ip_mut, cfvalues_ip, cfvalues_ip_mut, f32, ip_player);
++single_views!(dense_cfvalues_ip_compressed, dense_cfvalues_ip_compressed_mut, cfvalues_ip_compressed, cfvalues_ip_compressed_mut, i16, ip_player);
++single_views!(dense_cfvalues_chance, dense_cfvalues_chance_mut, cfvalues_chance, cfvalues_chance_mut, f32, chance_player);
++single_views!(dense_cfvalues_chance_compressed, dense_cfvalues_chance_compressed_mut, cfvalues_chance_compressed, cfvalues_chance_compressed_mut, i16, chance_player);
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn direct_positive_regrets_match_expansion_for_extremes_and_every_ghost_position() {
++        for hands in [1usize, 2, 7, 16, 31, 65] {
++            for first_invalid in 0..hands {
++                for rows in [1usize, 2, 5] {
++                    // Includes empty legal sets, leading/trailing ghosts and
++                    // scattered public-card conflicts within vector-width tails.
++                    let indices:Vec<u16>=(0..hands)
++                        .filter(|&h| h<first_invalid || (h>first_invalid && h%3==0))
++                        .map(|h|h as u16).collect();
++                    let values=[i16::MIN,-32767,-1,0,1,17,i16::MAX];
++                    let packed:Vec<i16>=(0..rows*(indices.len()+1))
++                        .map(|i|values[(i+first_invalid)%values.len()]).collect();
++                    let expected=expand(&packed,&indices,hands,rows);
++                    let mut actual=vec![MaybeUninit::uninit();hands*rows];
++                    positive_packed_regrets(&packed,&indices,hands,rows,&mut actual);
++                    for (value,&word) in actual.into_iter().zip(&expected.0) {
++                        assert_eq!(unsafe{value.assume_init()}.to_bits(),(word.max(0) as f32).to_bits());
++                    }
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn sparse_views_round_trip_all_legal_values_and_row_ghosts() {
++        let indices = [1, 3];
++        let mut packed = [11u16, 13, 10, 21, 23, 20];
++        assert_eq!(&*read_view(&packed, Some(&indices), 5, 2), &[10, 11, 10, 13, 10, 20, 21, 20, 23, 20]);
++        {
++            let mut view = write_view(&mut packed, Some(&indices), 5, 2);
++            view.copy_from_slice(&[100, 101, 102, 103, 104, 200, 201, 202, 203, 204]);
++        }
++        assert_eq!(packed, [101, 103, 100, 201, 203, 200]);
++        assert_eq!(&*read_view(&packed, Some(&indices), 5, 2), &[100, 101, 100, 103, 100, 200, 201, 200, 203, 200]);
++    }
++
++    #[test]
++    fn empty_legal_set_and_nonleading_invalid_index_preserve_ghost() {
++        let mut packed = [7i16, 8];
++        {
++            let mut view = write_view(&mut packed, Some(&[]), 3, 2);
++            assert_eq!(&*view, &[7, 7, 7, 8, 8, 8]);
++            view[3] = 9;
++        }
++        assert_eq!(packed, [7, 9]);
++        let mut packed = [1.0f32, 2.0, 3.0];
++        {
++            let mut view = write_view(&mut packed, Some(&[0, 1]), 4, 1);
++            view[2] = 4.0;
++            view[3] = 5.0;
++        }
++        assert_eq!(packed, [1.0, 2.0, 4.0]);
++    }
++
++    #[test]
++    fn dense_views_are_borrowed_and_simultaneous_sparse_buffers_do_not_alias() {
++        let mut values = [1.0f32, 2.0];
++        let pointer = values.as_ptr();
++        {
++            let mut view = write_view(&mut values, None, 2, 1);
++            assert_eq!(view.as_ptr(), pointer);
++            view[0] = 3.0;
++        }
++        assert_eq!(values, [3.0, 2.0]);
++        let a = read_view(&[11u16, 12], Some(&[1]), 3, 1);
++        let b = read_view(&[21u16, 22], Some(&[1]), 3, 1);
++        assert_ne!(a.as_ptr(), b.as_ptr());
++        assert_eq!(&*a, &[12, 11, 12]);
++        assert_eq!(&*b, &[22, 21, 22]);
++    }
++
++    #[test]
++    fn reused_poisoned_buffer_is_fully_overwritten_before_view_exposure() {
++        POOLS.with(|pool| *pool.borrow_mut() = Pools::default());
++        let mut poison = u16::take_buffer(12);
++        let pointer = poison.as_ptr();
++        poison.fill(u16::MAX);
++        u16::recycle_buffer(poison);
++        POOLS.with(|pool| assert_eq!(pool.borrow().unsigned[0].len(), 12));
++        {
++            let view = read_view(&[10u16, 12, 99, 20, 22, 199], Some(&[0, 2]), 6, 2);
++            assert_eq!(view.as_ptr(), pointer, "exercise an actual pooled checkout");
++            assert_eq!(&*view, &[10, 99, 12, 99, 99, 99, 20, 199, 22, 199, 199, 199]);
++        }
++
++        let mut poison = f32::take_buffer(5);
++        let pointer = poison.as_ptr();
++        poison.fill(f32::NAN);
++        f32::recycle_buffer(poison);
++        let mut packed = [1.0f32, 2.0, 9.0];
++        {
++            let mut view = write_view(&mut packed, Some(&[0, 3]), 5, 1);
++            assert_eq!(view.as_ptr(), pointer);
++            assert_eq!(&*view, &[1.0, 9.0, 9.0, 2.0, 9.0]);
++            view[3] = 4.0;
++        }
++        assert_eq!(packed, [1.0, 4.0, 9.0]);
++    }
++
++    #[test]
++    fn pool_is_bounded_across_word_types_and_nested_borrow_falls_back() {
++        POOLS.with(|pool| *pool.borrow_mut() = Pools::default());
++        let mut buffers = Vec::new();
++        for n in 1..80 { buffers.push(Buffer(f32::take_buffer(n * 1024))); }
++        drop(buffers);
++        for n in 1..80 {
++            drop(Buffer(u16::take_buffer(n * 1024)));
++            drop(Buffer(i16::take_buffer(n * 1024)));
++        }
++        POOLS.with(|pool| {
++            let pool = pool.borrow_mut();
++            assert!(pool.bytes <= MAX_IDLE_BYTES);
++            assert!(pool.floats.len() + pool.unsigned.len() + pool.signed.len() <= MAX_IDLE_BUFFERS);
++            drop(Buffer(u16::take_buffer(128)));
++        });
++    }
++}
+diff --git a/src/utility.rs b/src/utility.rs
+index c834de7..d9fef2f 100644
+--- a/src/utility.rs
++++ b/src/utility.rs
+@@ -1,3 +1,4 @@
++use crate::sparse_storage::*;
+ use crate::interface::*;
+ use crate::mutex_like::*;
+ use crate::sliceop::*;
+@@ -355,6 +356,29 @@ pub fn compute_mes_ev<T: Game>(game: &T) -> [f32; 2] {
+     [get_sum(0), get_sum(1)]
+ }
+ 
++/// Computes one player's MES value without traversing the other player's response.
++///
++/// Uses exactly the same counterfactual recursion, weighting order and pot/2 bias
++/// as [`compute_mes_ev`]. A fixed-opponent report needs only Hero's response;
++/// equilibrium exploitability must still evaluate both players.
++#[inline]
++pub fn compute_player_mes_ev<T: Game>(game: &T, player: usize) -> f32 {
++    assert!(player < 2, "MES player must be 0 or 1");
++    if !game.is_ready() && !game.is_solved() {
++        panic!("Game is not ready");
++    }
++    let mut cfvalues = Vec::with_capacity(game.num_private_hands(player));
++    compute_best_cfv_recursive(
++        cfvalues.spare_capacity_mut(),
++        game,
++        &game.root(),
++        player,
++        game.initial_weights(player ^ 1),
++    );
++    unsafe { cfvalues.set_len(game.num_private_hands(player)) };
++    weighted_sum(&cfvalues, game.initial_weights(player))
++}
++
+ /// The recursive helper function for computing the counterfactual values of the given strategy.
+ fn compute_cfvalue_recursive<T: Game>(
+     result: &mut [MaybeUninit<f32>],
+@@ -442,10 +466,10 @@ fn compute_cfvalue_recursive<T: Game>(
+         if save_cfvalues && node.cfvalue_storage_player() == Some(player) {
+             let result = unsafe { &*(result as *const _ as *const [f32]) };
+             if game.is_compression_enabled() {
+-                let cfv_scale = encode_signed_slice(node.cfvalues_chance_compressed_mut(), result);
++                let cfv_scale = encode_signed_slice(&mut dense_cfvalues_chance_compressed_mut(game, node), result);
+                 node.set_cfvalue_chance_scale(cfv_scale);
+             } else {
+-                node.cfvalues_chance_mut().copy_from_slice(result);
++                dense_cfvalues_chance_mut(game, node).copy_from_slice(result);
+             }
+         }
+     }
+@@ -466,15 +490,15 @@ fn compute_cfvalue_recursive<T: Game>(
+         // obtain the strategy
+         #[cfg(feature = "custom-alloc")]
+         let mut strategy = if game.is_compression_enabled() {
+-            normalized_strategy_compressed_custom_alloc(node.strategy_compressed(), num_actions)
++            normalized_strategy_compressed_custom_alloc(&dense_strategy_compressed(game, node), num_actions)
+         } else {
+-            normalized_strategy_custom_alloc(node.strategy(), num_actions)
++            normalized_strategy_custom_alloc(&dense_strategy(game, node), num_actions)
+         };
+         #[cfg(not(feature = "custom-alloc"))]
+         let mut strategy = if game.is_compression_enabled() {
+-            normalized_strategy_compressed(node.strategy_compressed(), num_actions)
++            normalized_strategy_compressed(&dense_strategy_compressed(game, node), num_actions)
+         } else {
+-            normalized_strategy(node.strategy(), num_actions)
++            normalized_strategy(&dense_strategy(game, node), num_actions)
+         };
+ 
+         // node-locking
+@@ -489,10 +513,10 @@ fn compute_cfvalue_recursive<T: Game>(
+         // save the counterfactual values
+         if save_cfvalues {
+             if game.is_compression_enabled() {
+-                let cfv_scale = encode_signed_slice(node.cfvalues_compressed_mut(), &cfv_actions);
++                let cfv_scale = encode_signed_slice(&mut dense_cfvalues_compressed_mut(game, node), &cfv_actions);
+                 node.set_cfvalue_scale(cfv_scale);
+             } else {
+-                node.cfvalues_mut().copy_from_slice(&cfv_actions);
++                dense_cfvalues_mut(game, node).copy_from_slice(&cfv_actions);
+             }
+         }
+     }
+@@ -511,15 +535,15 @@ fn compute_cfvalue_recursive<T: Game>(
+         // obtain the strategy
+         #[cfg(feature = "custom-alloc")]
+         let mut cfreach_actions = if game.is_compression_enabled() {
+-            normalized_strategy_compressed_custom_alloc(node.strategy_compressed(), num_actions)
++            normalized_strategy_compressed_custom_alloc(&dense_strategy_compressed(game, node), num_actions)
+         } else {
+-            normalized_strategy_custom_alloc(node.strategy(), num_actions)
++            normalized_strategy_custom_alloc(&dense_strategy(game, node), num_actions)
+         };
+         #[cfg(not(feature = "custom-alloc"))]
+         let mut cfreach_actions = if game.is_compression_enabled() {
+-            normalized_strategy_compressed(node.strategy_compressed(), num_actions)
++            normalized_strategy_compressed(&dense_strategy_compressed(game, node), num_actions)
+         } else {
+-            normalized_strategy(node.strategy(), num_actions)
++            normalized_strategy(&dense_strategy(game, node), num_actions)
+         };
+ 
+         // node-locking
+@@ -554,10 +578,10 @@ fn compute_cfvalue_recursive<T: Game>(
+     if save_cfvalues && node.has_cfvalues_ip() && player == 1 {
+         let result = unsafe { &*(result as *const _ as *const [f32]) };
+         if game.is_compression_enabled() {
+-            let cfv_scale = encode_signed_slice(node.cfvalues_ip_compressed_mut(), result);
++            let cfv_scale = encode_signed_slice(&mut dense_cfvalues_ip_compressed_mut(game, node), result);
+             node.set_cfvalue_ip_scale(cfv_scale);
+         } else {
+-            node.cfvalues_ip_mut().copy_from_slice(result);
++            dense_cfvalues_ip_mut(game, node).copy_from_slice(result);
+         }
+     }
+ }
+@@ -680,15 +704,15 @@ fn compute_best_cfv_recursive<T: Game>(
+         // obtain the strategy
+         #[cfg(feature = "custom-alloc")]
+         let mut cfreach_actions = if game.is_compression_enabled() {
+-            normalized_strategy_compressed_custom_alloc(node.strategy_compressed(), num_actions)
++            normalized_strategy_compressed_custom_alloc(&dense_strategy_compressed(game, node), num_actions)
+         } else {
+-            normalized_strategy_custom_alloc(node.strategy(), num_actions)
++            normalized_strategy_custom_alloc(&dense_strategy(game, node), num_actions)
+         };
+         #[cfg(not(feature = "custom-alloc"))]
+         let mut cfreach_actions = if game.is_compression_enabled() {
+-            normalized_strategy_compressed(node.strategy_compressed(), num_actions)
++            normalized_strategy_compressed(&dense_strategy_compressed(game, node), num_actions)
+         } else {
+-            normalized_strategy(node.strategy(), num_actions)
++            normalized_strategy(&dense_strategy(game, node), num_actions)
+         };
+ 
+         // node-locking
+@@ -827,3 +851,56 @@ pub(crate) fn apply_locking_strategy(dst: &mut [f32], locking: &[f32]) {
+         });
+     }
+ }
++
++#[cfg(test)]
++mod pokerlab_mes_tests {
++    use super::*;
++    use crate::{card_from_str, flop_from_str, solve_step, ActionTree, BoardState, CardConfig, PostFlopGame, TreeConfig, NOT_DEALT};
++
++    #[test]
++    fn single_player_mes_matches_original_two_player_path() {
++        // compute_mes_ev above intentionally retains its original independent
++        // two-seat driver; this must not compare a helper against itself.
++        for compressed in [false, true] {
++            for river in [NOT_DEALT, card_from_str("3d").unwrap()] {
++                let cards = CardConfig {
++                    range: ["AsAh,KsKh,JsJh:0.4".parse().unwrap(), "AcAd,KcKd,QcQd:0.7".parse().unwrap()],
++                    flop: flop_from_str("9h8h2c").unwrap(),
++                    turn: card_from_str("4s").unwrap(),
++                    river,
++                };
++                let config = TreeConfig {
++                    initial_state: if river == NOT_DEALT { BoardState::Turn } else { BoardState::River },
++                    starting_pot: 20,
++                    effective_stack: 30,
++                    turn_bet_sizes: [("50%", "").try_into().unwrap(), ("50%", "").try_into().unwrap()],
++                    river_bet_sizes: [("33%,75%", "2x").try_into().unwrap(), ("50%", "2x").try_into().unwrap()],
++                    ..Default::default()
++                };
++                let mut game = PostFlopGame::with_config(cards, ActionTree::new(config).unwrap()).unwrap();
++                assert!(game.memory_usage().0 < 10 * 1024 * 1024);
++                game.allocate_memory(compressed);
++                for iteration in 0..7 { solve_step(&game, iteration); }
++                for locked in [false, true] {
++                    if locked {
++                        let hands = game.num_private_hands(0);
++                        let actions = game.root().num_actions();
++                        let mut lock = vec![0.0; hands * actions];
++                        // Include deterministic zero-probability action branches.
++                        lock[..hands].fill(1.0);
++                        game.lock_current_strategy(&lock);
++                    }
++                    let original = compute_mes_ev(&game);
++                    for player in 0..2 {
++                        assert_eq!(compute_player_mes_ev(&game, player).to_bits(), original[player].to_bits());
++                    }
++                }
++                finalize(&mut game);
++                let original = compute_mes_ev(&game);
++                for player in 0..2 {
++                    assert_eq!(compute_player_mes_ev(&game, player).to_bits(), original[player].to_bits());
++                }
++            }
++        }
++    }
++}

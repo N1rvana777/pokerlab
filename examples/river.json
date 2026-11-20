@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "board": ["2c", "3d", "7h", "8s", "9c"],
+  "players": ["AsAh,QhJh", "KsKh,TcTd"],
+  "pot": 20,
+  "stack": 30,
+  "bets": ["10c", "10c", "10c"],
+  "hero": 0,
+  "mode": "equilibrium",
+  "target": 0.05,
+  "target_unit": "pot_pct",
+  "max_iterations": 1000,
+  "memory_budget_mb": 2048,
+  "profile": {"traits": []}
+}

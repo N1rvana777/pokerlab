@@ -1,0 +1,4 @@
+# Existing Pokerlab solver dependencies remain in ../pyproject.toml.
+Pillow>=10.0
+cryptography>=43.0
+psutil>=5.9

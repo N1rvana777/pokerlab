@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "board": [
+    "9h",
+    "8h",
+    "2c"
+  ],
+  "players": [
+    "AA-JJ,AKs,AQs,KQs,QJs,JTs,T9s,98s,87s,76s,65s",
+    "TT-55,AQs,AJs,KQs,QJs,JTs,T9s,98s,87s,76s,65s,54s"
+  ],
+  "pot": 100,
+  "stack": 200,
+  "bets": [
+    "33%",
+    "66%",
+    "75%"
+  ],
+  "raises": [
+    "a",
+    "a",
+    "a"
+  ],
+  "hero": 0,
+  "mode": "fixed",
+  "target": 0.1,
+  "target_unit": "pot_pct",
+  "max_iterations": 500,
+  "memory_budget_mb": 4096,
+  "profile": {
+    "traits": [
+      {
+        "kind": "station",
+        "strength": 2.0,
+        "streets": [
+          3,
+          4,
+          5
+        ]
+      },
+      {
+        "kind": "overbluff",
+        "strength": 2.0,
+        "streets": [
+          3,
+          4,
+          5
+        ]
+      },
+      {
+        "kind": "double_barrel_give_up",
+        "strength": 3.0,
+        "streets": [
+          5
+        ]
+      }
+    ]
+  }
+}

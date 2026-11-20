@@ -1,0 +1,7 @@
+/.data/
+/exports/
+/cache/
+/.credentials/
+__pycache__/
+.pytest_cache/
+.tools/

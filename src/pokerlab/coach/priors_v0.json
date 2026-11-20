@@ -1,0 +1,26 @@
+{
+  "version": "placeholder-v0",
+  "calibrated": false,
+  "description": "占位先验：现场低级别现金局的粗略经验值，不是测量数据。strength=10 表示相当于 10 次观察。第 3 阶段用资料或你的手牌库校准。",
+  "strength": 10,
+  "stats": {
+    "vpip": {"mean": 0.38, "high": "入池偏宽（松）", "low": "入池偏紧（紧）"},
+    "pfr": {"mean": 0.12, "high": "翻前加注偏多", "low": "翻前很少加注（被动）"},
+    "open_raise": {"mean": 0.45, "high": "开池常加注", "low": "开池很少加注"},
+    "open_limp": {"mean": 0.30, "high": "常开池溜入", "low": "很少开池溜入"},
+    "three_bet": {"mean": 0.06, "high": "3-bet 偏多", "low": "很少 3-bet"},
+    "fold_to_three_bet": {"mean": 0.40, "high": "面对 3-bet 弃牌偏多", "low": "面对 3-bet 很少弃牌"},
+    "cbet_flop": {"mean": 0.60, "high": "翻牌持续下注偏多", "low": "翻牌持续下注偏少"},
+    "donk_flop": {"mean": 0.10, "high": "翻牌常领先下注（donk）", "low": null},
+    "fold_to_cbet_flop": {"mean": 0.45, "high": "面对翻牌持续下注弃牌偏多（overfold）", "low": "翻牌很难打走"},
+    "raise_cbet_flop": {"mean": 0.08, "high": "常加注翻牌持续下注", "low": null},
+    "cbet_turn": {"mean": 0.45, "high": "转牌常开第二枪", "low": "转牌常放弃进攻"},
+    "fold_to_turn_bet": {"mean": 0.45, "high": "面对转牌下注弃牌偏多", "low": "转牌很难打走"},
+    "river_bet": {"mean": 0.30, "high": "河牌常主动下注", "low": "河牌很少主动下注"},
+    "fold_to_river_bet": {"mean": 0.40, "high": "面对河牌下注弃牌偏多（overfold）", "low": "河牌跟注偏多（跟注站倾向）"},
+    "check_raise": {"mean": 0.08, "high": "常过牌加注", "low": null},
+    "wtsd": {"mean": 0.30, "high": "常坚持到摊牌", "low": "很少坚持到摊牌"},
+    "wsd": {"mean": 0.50, "high": null, "low": null},
+    "aggression": {"mean": 0.35, "high": "翻后激进", "low": "翻后被动"}
+  }
+}

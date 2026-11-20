@@ -1,0 +1,11 @@
+{
+  "kind": "match",
+  "rules": {"small_blind": 50, "big_blind": 100, "ante": 0},
+  "players": 2,
+  "starting_stacks_bb": [100, 100],
+  "stack_mode": "reset",
+  "format": "duplicate",
+  "deals": 2000,
+  "seed": 1,
+  "agents": [{"type": "rule"}, {"type": "random", "seed": 7}]
+}

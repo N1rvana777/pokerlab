@@ -1,0 +1,6 @@
+{
+  "kind": "river",
+  "subgame": "river_small.json",
+  "checkpoint": "outputs/plo/river-small/checkpoint.npz",
+  "opponents": ["check_call", "uniform", "aggressive", "check_fold"]
+}

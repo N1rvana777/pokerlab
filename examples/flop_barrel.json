@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "board": ["Ac", "Ad", "2h"],
+  "players": ["AsAh", "KcKd"],
+  "pot": 20,
+  "stack": 30,
+  "bets": ["10c", "10c", "10c"],
+  "hero": 0,
+  "mode": "fixed",
+  "target": 0.05,
+  "target_unit": "pot_pct",
+  "max_iterations": 200,
+  "memory_budget_mb": 4096,
+  "profile": {"fixture_river_bet": 0.0}
+}

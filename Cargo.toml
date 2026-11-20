@@ -1,0 +1,26 @@
+[package]
+name = "pokerlab-solver"
+license = "AGPL-3.0-or-later"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[[bin]]
+name = "pokerlab-solver"
+path = "native/main.rs"
+
+[dependencies]
+# Pinned checkout + documented expanded-suits.patch; checked by scripts/build.ps1.
+postflop-solver = { path = "third_party/postflop-solver", default-features = false, features = ["rayon"] }
+rayon = "=1.10.0"
+rayon-core = "=1.12.1"
+serde = { version = "=1.0.217", features = ["derive"] }
+serde_json = "=1.0.138"
+
+[package.metadata.engine]
+repository = "https://github.com/b-inary/postflop-solver"
+revision = "9d1509fe5077d019825f833eed04b16d342dfda1"

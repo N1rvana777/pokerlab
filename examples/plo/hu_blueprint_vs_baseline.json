@@ -1,0 +1,29 @@
+{
+ "kind": "match",
+ "rules": {
+  "small_blind": 50,
+  "big_blind": 100,
+  "ante": 0
+ },
+ "players": 2,
+ "starting_stacks_bb": [
+  20,
+  20
+ ],
+ "stack_mode": "reset",
+ "format": "duplicate",
+ "seed": 21,
+ "deals": 500,
+ "agents": [
+  {
+   "type": "blueprint_v0",
+   "seed": 1,
+   "checkpoint": "outputs/plo/v6/blueprint-v0/checkpoint.npz"
+  },
+  {
+   "type": "baseline",
+   "seed": 2
+  }
+ ],
+ "note": "20bb effective (the blueprint's training depth); functional checks only, not strength claims; the blueprint checkpoint is outputs/plo/v6/blueprint-v0/checkpoint.npz"
+}

@@ -1,0 +1,34 @@
+{
+ "kind": "match",
+ "rules": {
+  "small_blind": 50,
+  "big_blind": 100,
+  "ante": 0
+ },
+ "players": 2,
+ "starting_stacks_bb": [
+  20,
+  20
+ ],
+ "stack_mode": "reset",
+ "format": "duplicate",
+ "seed": 21,
+ "deals": 40,
+ "agents": [
+  {
+   "type": "turn_river_solver",
+   "seed": 1,
+   "early_policy": "outputs/plo/v6/blueprint-v0/checkpoint.npz",
+   "turn_river": {
+    "range_samples": 40,
+    "iterations": 100,
+    "measure_exploitability": false
+   }
+  },
+  {
+   "type": "baseline",
+   "seed": 2
+  }
+ ],
+ "note": "20bb effective (the blueprint's training depth); functional checks only, not strength claims; the blueprint checkpoint is outputs/plo/v6/blueprint-v0/checkpoint.npz"
+}

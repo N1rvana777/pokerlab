@@ -1,0 +1,127 @@
+PokerStars Hand #250000000001:  Hold'em No Limit ($0.50/$1.00 USD) - 2026/10/20 21:30:00 ET
+Table 'Synthetic II' 6-max Seat #3 is the button
+Seat 1: Mike ($100 in chips)
+Seat 2: Anna ($85.50 in chips)
+Seat 3: Hero ($100 in chips)
+Seat 4: Bob ($120 in chips)
+Seat 5: Carl ($98.25 in chips)
+Seat 6: Dana ($100 in chips)
+Bob: posts small blind $0.50
+Carl: posts big blind $1
+*** HOLE CARDS ***
+Dealt to Hero [Ah Kd]
+Dana: folds
+Mike: raises $2 to $3
+Anna: folds
+Hero: raises $7 to $10
+Bob: folds
+Carl: folds
+Mike: calls $7
+*** FLOP *** [Ks 7d 2c]
+Mike: checks
+Hero: bets $12
+Mike: folds
+Uncalled bet ($12) returned to Hero
+Hero collected $20.50 from pot
+Hero: doesn't show hand
+*** SUMMARY ***
+Total pot $21.50 | Rake $1
+Board [Ks 7d 2c]
+Seat 1: Mike folded on the Flop
+Seat 2: Anna folded before Flop (didn't bet)
+Seat 3: Hero (button) collected ($20.50)
+Seat 4: Bob (small blind) folded before Flop
+Seat 5: Carl (big blind) folded before Flop
+Seat 6: Dana folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #250000000002:  Hold'em No Limit ($0.50/$1.00 USD) - 2026/10/20 21:32:10 ET
+Table 'Synthetic II' 6-max Seat #4 is the button
+Seat 1: Mike ($90 in chips)
+Seat 2: Anna ($85.50 in chips)
+Seat 3: Hero ($110.50 in chips)
+Seat 4: Bob ($120 in chips)
+Seat 5: Carl ($97.25 in chips)
+Seat 6: Dana ($100 in chips)
+Carl: posts small blind $0.50
+Dana: posts big blind $1
+*** HOLE CARDS ***
+Dealt to Hero [9h 9c]
+Mike: calls $1
+Anna: folds
+Hero: raises $4 to $5
+Bob: folds
+Carl: folds
+Dana: folds
+Mike: calls $4
+*** FLOP *** [Qs 8d 3c]
+Mike: checks
+Hero: bets $6
+Mike: calls $6
+*** TURN *** [Qs 8d 3c] [2h]
+Mike: checks
+Hero: checks
+*** RIVER *** [Qs 8d 3c 2h] [Js]
+Mike: bets $15
+Hero: calls $15
+*** SHOW DOWN ***
+Mike: shows [Jc Td] (a pair of Jacks)
+Hero: mucks hand
+Mike collected $51.50 from pot
+*** SUMMARY ***
+Total pot $53.50 | Rake $2
+Board [Qs 8d 3c 2h Js]
+Seat 1: Mike showed [Jc Td] and won ($51.50) with a pair of Jacks
+Seat 3: Hero mucked [9h 9c]
+
+
+
+PokerStars Hand #250000000003:  Hold'em No Limit ($0.50/$1.00 USD) - 2026/10/20 21:33:40 ET
+Table 'Synthetic II' 6-max Seat #5 is the button
+Seat 1: Mike ($116.50 in chips)
+Seat 3: Hero ($84.50 in chips)
+Seat 6: Dana ($99 in chips)
+Dana: posts small blind $0.50
+Mike: posts big blind $1
+*** HOLE CARDS ***
+Dealt to Hero [7c 2d]
+Hero: folds
+Dana: folds
+Uncalled bet ($0.50) returned to Mike
+Mike collected $1 from pot
+*** SUMMARY ***
+Total pot $1 | Rake $0
+Seat 1: Mike (big blind) collected ($1)
+Seat 3: Hero (button) folded before Flop (didn't bet)
+Seat 6: Dana (small blind) folded before Flop
+
+
+
+PokerStars Hand #250000000004:  Hold'em No Limit ($0.50/$1.00 USD) - 2026/10/20 21:35:05 ET
+Table 'Synthetic II' 6-max Seat #1 is the button
+Seat 1: Mike ($30 in chips)
+Seat 3: Hero ($100 in chips)
+Seat 6: Dana ($100 in chips)
+Hero: posts small blind $0.50
+Dana: posts big blind $1
+*** HOLE CARDS ***
+Dealt to Hero [Qh Qd]
+Mike: raises $2 to $3
+Hero: raises $9 to $12
+Dana: folds
+Mike: raises $18 to $30 and is all-in
+Hero: calls $18
+*** FLOP *** [Ac 9s 4d]
+*** TURN *** [Ac 9s 4d] [5c]
+*** RIVER *** [Ac 9s 4d 5c] [Kh]
+*** SHOW DOWN ***
+Hero: shows [Qh Qd] (a pair of Queens)
+Mike: shows [Ah Jc] (a pair of Aces)
+Mike collected $59 from pot
+*** SUMMARY ***
+Total pot $61 | Rake $2
+Board [Ac 9s 4d 5c Kh]
+Seat 1: Mike (button) showed [Ah Jc] and won ($59) with a pair of Aces
+Seat 3: Hero (small blind) showed [Qh Qd] and lost with a pair of Queens
+Seat 6: Dana (big blind) folded before Flop

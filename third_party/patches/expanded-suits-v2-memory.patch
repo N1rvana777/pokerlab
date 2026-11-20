@@ -1,0 +1,134 @@
+diff --git a/src/game/base.rs b/src/game/base.rs
+index f1cc0f0..3a09184 100644
+--- a/src/game/base.rs
++++ b/src/game/base.rs
+@@ -138,6 +138,14 @@ impl PostFlopGame {
+         Ok(game)
+     }
+ 
++    /// PokerLab extension: retain every public-card branch for asymmetric node locks.
++    /// Default constructors keep upstream suit-isomorphism behavior unchanged.
++    pub fn with_config_unmerged(card_config: CardConfig, action_tree: ActionTree) -> Result<Self, String> {
++        let mut game = Self::new();
++        game.update_config_internal(card_config, action_tree, true)?;
++        Ok(game)
++    }
++
+     /// Updates the game configuration. The solved result will be lost.
+     #[inline]
+     pub fn update_config(
+@@ -145,6 +153,27 @@ impl PostFlopGame {
+         card_config: CardConfig,
+         action_tree: ActionTree,
+     ) -> Result<(), String> {
++        self.update_config_internal(card_config, action_tree, false)
++    }
++
++    fn update_config_internal(
++        &mut self,
++        card_config: CardConfig,
++        action_tree: ActionTree,
++        expand_suits: bool,
++    ) -> Result<(), String> {
++        *self = Self::prepare_config(card_config, action_tree, expand_suits)?;
++        self.build_prepared()
++    }
++
++    /// PokerLab: card tables and exact storage counts before allocating the node arena.
++    pub fn prepare_config(card_config: CardConfig, action_tree: ActionTree, expand_suits: bool) -> Result<Self, String> {
++        let mut game = Self::new();
++        game.prepare_internal(card_config, action_tree, expand_suits)?;
++        Ok(game)
++    }
++
++    fn prepare_internal(&mut self, card_config: CardConfig, action_tree: ActionTree, expand_suits: bool) -> Result<(), String> {
+         self.state = State::ConfigError;
+ 
+         if !action_tree.invalid_terminals().is_empty() {
+@@ -161,6 +190,20 @@ impl PostFlopGame {
+ 
+         self.check_card_config()?;
+         self.init_card_fields();
++        if expand_suits {
++            self.isomorphism_ref_turn.clear();
++            self.isomorphism_card_turn.clear();
++            self.isomorphism_swap_turn = Default::default();
++            self.isomorphism_ref_river = vec![Vec::new(); 52];
++            self.isomorphism_card_river = Default::default();
++            self.isomorphism_swap_river = Default::default();
++        }
++        Ok(())
++    }
++
++    /// PokerLab: materialize only after the caller has checked memory_plan against its budget.
++    pub fn build_prepared(&mut self) -> Result<(), String> {
++        if self.state != State::ConfigError {return Err("Game is not prepared".into());}
+         self.init_root()?;
+ 
+         self.state = State::TreeBuilt;
+@@ -171,6 +214,33 @@ impl PostFlopGame {
+         Ok(())
+     }
+ 
++    /// [arena bytes, action elements, IP elements, chance elements, card/misc bytes,
++    /// opponent lock elements, opponent lock nodes]. No expanded nodes allocated.
++    pub fn memory_plan(&self, opponent: usize) -> [u64; 7] {
++        fn visit(node: &ActionTreeNode, fresh: bool, hands: [u64;2], opponent: usize, rows: &mut [[u64;5];3]) {
++            if node.player & PLAYER_TERMINAL_FLAG != 0 {return;}
++            let row=&mut rows[node.board_state as usize];
++            if node.player & PLAYER_CHANCE_FLAG != 0 {
++                let previous=node.player & PLAYER_MASK;
++                if previous < 2 {row[2]+=hands[(previous ^ 1) as usize];}
++            } else {
++                let n=node.actions.len() as u64*hands[node.player as usize];
++                row[0]+=n;
++                if fresh {row[1]+=hands[1];}
++                if node.player as usize==opponent {row[3]+=n;row[4]+=1;}
++            }
++            for child in &node.children {visit(&child.lock(),node.player & PLAYER_CHANCE_FLAG != 0,hands,opponent,rows);}
++        }
++        let nodes=self.count_num_nodes();
++        let public=count_num_action_nodes(&self.action_root.lock());
++        let mut rows=[[0;5];3];
++        visit(&self.action_root.lock(),true,[self.private_cards[0].len() as u64,self.private_cards[1].len() as u64],opponent,&mut rows);
++        let mut sums=[0;5];
++        for s in 0..3 {let factor=if public[s]==0 {0}else{nodes[s]/public[s]};for i in 0..5 {sums[i]+=rows[s][i]*factor;}}
++        [nodes.iter().sum::<u64>()*mem::size_of::<MutexLike<PostFlopNode>>() as u64,
++         sums[0],sums[1],sums[2],self.memory_usage_internal(),sums[3],sums[4]]
++    }
++
+     /// Sets the bunching effect configuration.
+     ///
+     /// **Warning**: Enabling the bunching effect will significantly slow down the solving process.
+diff --git a/src/game/interpreter.rs b/src/game/interpreter.rs
+index d44d63a..da81c3c 100644
+--- a/src/game/interpreter.rs
++++ b/src/game/interpreter.rs
+@@ -846,6 +846,27 @@ impl PostFlopGame {
+         ret
+     }
+ 
++    /// PokerLab: canonical identity for compiling a suit-invariant model once.
++    pub fn current_node_id(&self) -> usize {self.node_index(&self.node())}
++
++    /// PokerLab: replace this node's strategy in place, mapping actual suits to canonical suits.
++    /// Caller must NOT run CFR after compiling a frozen opponent this way.
++    pub fn replace_current_strategy(&mut self, strategy: &[f32]) {
++        assert!(self.state == State::MemoryAllocated);
++        assert!(!self.is_terminal_node() && !self.is_chance_node());
++        let player=self.current_player();
++        let hands=self.num_private_hands(player);
++        let mut values=strategy.to_vec();
++        let mut node=self.node();
++        assert_eq!(values.len(),node.num_actions()*hands);
++        assert!(!node.is_locked);
++        values.chunks_exact_mut(hands).for_each(|chunk|self.apply_swap(chunk,player,true));
++        if self.is_compression_enabled {
++            let scale=encode_unsigned_slice(node.strategy_compressed_mut(),&values);
++            node.set_strategy_scale(scale);
++        } else {node.strategy_mut().copy_from_slice(&values);}
++    }
++
+     /// Returns the total bet amount of each player (OOP, IP).
+     #[inline]
+     pub fn total_bet_amount(&self) -> [i32; 2] {

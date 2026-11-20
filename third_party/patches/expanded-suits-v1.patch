@@ -1,0 +1,49 @@
+diff --git a/src/game/base.rs b/src/game/base.rs
+index f1cc0f0..6dbd0ab 100644
+--- a/src/game/base.rs
++++ b/src/game/base.rs
+@@ -138,12 +138,29 @@ impl PostFlopGame {
+         Ok(game)
+     }
+ 
++    /// PokerLab extension: retain every public-card branch for asymmetric node locks.
++    /// Default constructors keep upstream suit-isomorphism behavior unchanged.
++    pub fn with_config_unmerged(card_config: CardConfig, action_tree: ActionTree) -> Result<Self, String> {
++        let mut game = Self::new();
++        game.update_config_internal(card_config, action_tree, true)?;
++        Ok(game)
++    }
++
+     /// Updates the game configuration. The solved result will be lost.
+     #[inline]
+     pub fn update_config(
+         &mut self,
+         card_config: CardConfig,
+         action_tree: ActionTree,
++    ) -> Result<(), String> {
++        self.update_config_internal(card_config, action_tree, false)
++    }
++
++    fn update_config_internal(
++        &mut self,
++        card_config: CardConfig,
++        action_tree: ActionTree,
++        expand_suits: bool,
+     ) -> Result<(), String> {
+         self.state = State::ConfigError;
+ 
+@@ -161,6 +178,14 @@ impl PostFlopGame {
+ 
+         self.check_card_config()?;
+         self.init_card_fields();
++        if expand_suits {
++            self.isomorphism_ref_turn.clear();
++            self.isomorphism_card_turn.clear();
++            self.isomorphism_swap_turn = Default::default();
++            self.isomorphism_ref_river = vec![Vec::new(); 52];
++            self.isomorphism_card_river = Default::default();
++            self.isomorphism_swap_river = Default::default();
++        }
+         self.init_root()?;
+ 
+         self.state = State::TreeBuilt;

@@ -1,0 +1,3 @@
+# Optional CPU transcription. PyAV 19 removes metadata_errors used by 1.2.1.
+faster-whisper==1.2.1
+av>=11,<19

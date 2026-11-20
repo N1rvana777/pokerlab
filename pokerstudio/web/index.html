@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="local-token" content="__TOKEN__">
+  <title>Pokerstudio · 扑克视频工作台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">♠ <span>Pokerstudio<small>本地扑克视频工作台</small></span></a>
+  <nav><a id="studio-tab" href="/">剪辑工作台</a><a id="analysis-tab" href="/analysis">Pokerlab 分析</a></nav>
+  <div class="header-actions"><span id="save-status">正在连接本地服务…</span><button id="undo" title="撤销项目编辑">撤销</button><button id="redo">恢复</button><button id="save" class="primary">保存项目</button></div>
+</header>
+<div id="error" class="error hidden" role="alert"></div>
+<div id="notice" class="notice hidden" role="status"></div>
+<div id="warnings" class="warnings hidden"></div>
+<div class="workflow studio-only"><span>① 素材与手牌</span><span>② 时间锚点</span><span>③ 讲稿与字幕</span><span>④ 剪辑与叠加</span><span>⑤ 导出 MP4</span></div>
+<main class="workspace" id="workspace">
+<aside class="library panel studio-only">
+  <div class="panel-heading"><h2>项目与素材</h2><span id="asset-count" class="badge">0</span></div>
+  <label>项目名称<input id="project-name" placeholder="我的扑克 vlog"></label>
+  <div class="row"><button id="rename-project">改名</button><button id="new-project">新建项目</button></div>
+  <label>已保存的项目<select id="project-list"><option value="">选择项目…</option></select></label>
+  <div class="row"><button id="open-project">打开所选</button><button id="refresh-projects">刷新</button></div>
+  <details><summary>打开 / 另存到本地路径</summary><label>项目 JSON 完整路径<input id="project-path" placeholder="C:\…\我的剪辑.pokerstudio.json"></label><div class="row"><button id="open-path">打开路径</button><button id="save-as">另存项目</button></div></details>
+  <hr>
+  <label>本地视频完整路径<input id="asset-path" placeholder="C:\Videos\poker.mp4"></label>
+  <button id="import-path" class="wide primary">导入路径（保留原素材）</button>
+  <label class="file-picker">或选择视频文件<input id="asset-file" type="file" accept="video/*,.mkv,.mov,.avi"></label>
+  <p class="hint">文件选择会复制到本应用素材目录。长录像优先用完整路径，按需读取。</p>
+  <button id="demo" class="wide">生成明确标注的短测试素材</button>
+  <div id="assets" class="asset-list"></div>
+  <details><summary>本地转写与媒体能力</summary><pre id="capabilities" class="compact"></pre><label>选定素材<select id="transcribe-asset"></select></label><label>已下载的本地模型目录<input id="transcribe-model" placeholder="输入本地模型目录，例如数据目录下 models/faster-whisper-tiny"></label><button id="transcribe">本地转写</button><p class="hint">不会启用收费云转写。转写返回后可导入字幕，文字和时间须人工检查。</p></details>
+</aside>
+<section class="editor studio-only">
+  <section class="panel preview-panel">
+    <div class="panel-heading"><h2>成片预览</h2><span id="preview-mode" class="muted">项目时间</span><span id="duration" class="badge">00:00.0</span></div>
+    <div class="preview-stage" id="preview-stage"><video id="video" preload="metadata" playsinline></video><img id="playing-overlay" alt="牌面与字幕叠加" class="hidden"><img id="frame" alt="当前时间的完整合成预览" class="hidden"><div id="preview-empty">导入素材，开始记录这一手牌。<small>暂停画面、播放叠加与导出共用同一份项目数据。</small></div></div>
+    <div class="transport"><button id="play" class="primary">▶ 播放</button><button id="back-second" title="后退一秒">−1s</button><button id="forward-second" title="前进一秒">+1s</button><input id="seek" type="range" min="0" max="0" step="0.01" value="0" aria-label="项目时间定位"><input id="playhead" type="number" min="0" step="0.1" value="0" aria-label="项目秒"><span class="muted">秒</span></div>
+  </section>
+  <section class="panel timeline-panel">
+    <div class="panel-heading"><h2>时间线</h2><span class="muted">原素材保持完整 · 标记使用项目秒</span></div>
+    <div id="timeline" class="timeline"></div>
+    <div id="clip-empty" class="empty">导入视频后，片段会出现在这里。</div>
+    <div class="clip-controls"><label>所选片段<input id="clip-name" placeholder="片段名称"></label><label>素材入点<input id="clip-in" type="number" min="0" step="0.01"></label><label>素材出点<input id="clip-out" type="number" min="0" step="0.01"></label><button id="trim" class="primary">应用范围</button></div>
+    <div class="row wrap"><button id="set-in">用当前画面设入点</button><button id="set-out">用当前画面设出点</button><button id="split">在当前画面切分</button><button id="move-up">前移</button><button id="move-down">后移</button><button id="delete-clip" class="danger">移除片段</button></div>
+  </section>
+  <section class="panel detail-panel">
+    <div class="section-tabs"><button data-detail="hand" class="active">手牌与行动</button><button data-detail="subtitle">字幕</button><button data-detail="overlay">文字叠加</button><button data-detail="export">导出与任务</button></div>
+    <div id="detail-hand" class="detail-view">
+      <div class="row"><select id="hand-list" aria-label="所选手牌"><option value="">尚未标记手牌</option></select><button id="new-hand">标记新手牌</button><button id="delete-hand" class="danger">删除</button></div>
+      <div class="grid three"><label>手牌标题<input id="hand-title" placeholder="例如：River 两对对加注"></label><label>开始（项目秒）<input id="hand-start" type="number" min="0" step="0.01"></label><label>结束（项目秒）<input id="hand-end" type="number" min="0" step="0.01"></label></div>
+      <div class="row wrap"><button id="hand-start-now">当前设开始</button><button id="hand-end-now">当前设结束</button><button id="extract-hand">将所选手牌剪成独立时间线</button></div>
+      <div class="grid four"><label>金额单位<select id="hand-unit"><option value="chips">筹码 chips</option><option value="USD">美元 USD（仅记录）</option></select></label><label>分析街道<select id="hand-street"><option value="flop">Flop</option><option value="turn">Turn</option><option value="river">River</option></select></label><label>起始底池<input id="hand-pot" type="number" min="0" step="any" placeholder="未知留空"></label><label>有效剩余筹码<input id="hand-stack" type="number" min="0" step="any" placeholder="未知留空"></label></div>
+      <div class="grid three"><label>小盲<input id="blind-small" type="number" min="0" step="any" placeholder="未知"></label><label>大盲<input id="blind-big" type="number" min="0" step="any" placeholder="未知"></label><label>Straddle<input id="blind-straddle" type="number" min="0" step="any" placeholder="未知"></label></div>
+      <label>公共牌（按发牌顺序，未知使用 ?）<input id="hand-board" placeholder="例如：2c 3d 7h 8s 9c"></label>
+      <div class="subheading"><h3>玩家</h3><button id="add-player">添加玩家</button></div><div id="players"></div>
+      <div class="subheading"><h3>行动与视频锚点</h3><button id="add-action">添加当前时间行动</button></div><div id="actions"></div>
+      <div class="subheading"><h3>公共牌出现时间</h3><button id="add-reveal">添加发牌锚点</button></div><div id="reveals"></div>
+      <label>讲稿 / 复盘备注<textarea id="hand-notes" rows="3" placeholder="根据已确认的手牌与真实计算起草讲解；可直接修改。"></textarea></label>
+      <label class="check"><input id="hand-overlay" type="checkbox" checked> 在预览和成片中显示牌面、玩家及已发生的行动</label>
+      <details><summary>本手牌的 Solver 分析配置（完整 JSON，可选）</summary><p class="hint">必须与已记录的牌面、起始底池及有效剩余筹码一致。未知范围不会自动猜测。当前街已发生行动时，需单独确认街开始配置。</p><textarea id="hand-solver-config" rows="10" class="code" placeholder="留空按明确手牌字段映射；否则填完整 v1 config"></textarea><button id="hand-config-example">载入 River 示例配置（仅配置）</button></details>
+      <div class="row wrap footer-actions"><button id="save-hand" class="primary">保存手牌与锚点</button><label>Hero<select id="hand-hero"><option value="0">OOP</option><option value="1">IP</option></select></label><button id="solve-hand">分析当前手牌</button><button id="explain-hand">请助手起草讲解</button></div>
+      <div id="hand-result" class="result hidden"></div>
+    </div>
+    <div id="detail-subtitle" class="detail-view hidden">
+      <p class="hint">字幕开始、结束使用剪辑后项目秒。SRT 导入会替换当前字幕，可撤销。</p>
+      <div class="row"><select id="subtitle-list"><option value="">新建字幕</option></select><button id="new-subtitle">新字幕</button><button id="delete-subtitle" class="danger">删除</button></div>
+      <div class="grid two"><label>开始（项目秒）<input id="subtitle-start" type="number" min="0" step="0.01"></label><label>结束（项目秒）<input id="subtitle-end" type="number" min="0" step="0.01"></label></div>
+      <label>字幕内容<textarea id="subtitle-text" rows="3"></textarea></label><label class="check"><input id="subtitle-enabled" type="checkbox" checked> 显示该字幕</label><button id="save-subtitle" class="primary">保存字幕</button>
+      <hr><label class="file-picker">导入 SRT 文件<input id="srt-file" type="file" accept=".srt,text/plain"></label><label>SRT 文本<textarea id="srt-text" rows="5" class="code" placeholder="1&#10;00:00:00,000 --> 00:00:02,000&#10;字幕内容"></textarea></label><div class="row"><button id="import-srt">导入 SRT 文本</button><a class="button" href="/api/srt" download="pokerstudio.srt">导出 SRT</a></div>
+    </div>
+    <div id="detail-overlay" class="detail-view hidden">
+      <div class="row"><select id="overlay-list"><option value="">新建说明文字</option></select><button id="new-overlay">新叠加</button><button id="delete-overlay" class="danger">删除</button></div>
+      <div class="grid two"><label>开始（项目秒）<input id="overlay-start" type="number" min="0" step="0.01"></label><label>结束（项目秒）<input id="overlay-end" type="number" min="0" step="0.01"></label></div>
+      <label>说明文字<textarea id="overlay-text" rows="3" placeholder="说明、条件或测试素材标识"></textarea></label><label class="check"><input id="overlay-enabled" type="checkbox" checked> 在预览和导出中显示</label><button id="save-overlay" class="primary">保存叠加</button>
+    </div>
+    <div id="detail-export" class="detail-view hidden">
+      <div class="grid three"><label>宽度<input id="export-width" type="number" min="320" max="3840" step="2" value="1280"></label><label>高度<input id="export-height" type="number" min="240" max="2160" step="2" value="720"></label><label>帧率<input id="export-fps" type="number" min="1" max="60" value="30"></label></div>
+      <div class="row"><label class="check"><input id="export-subtitles" type="checkbox" checked> 烧录字幕</label><label class="check"><input id="export-overlays" type="checkbox" checked> 烧录手牌与叠加</label></div><button id="export" class="primary wide">按当前时间线导出 MP4</button><p class="hint">本地 CPU 编码，保留对应音轨。项目版本在任务启动时冻结。取消和错误不会显示为导出成功。</p><div id="tasks" class="task-list"></div>
+    </div>
+  </section>
+</section>
+<section class="analysis-main panel analysis-only hidden">
+  <div class="panel-heading"><h2>Pokerlab · 独立分析入口</h2><span class="badge">真实本地 Solver</span></div>
+  <p>此处的分析配置与剪辑项目分开保存。两人 Flop / Turn / River，街开始由 OOP 行动；有效剩余筹码，SPR ≤ 20，无未来抽水。</p>
+  <div class="row wrap"><select id="analysis-example"><option value="river.json">已知 River 均衡参考</option><option value="station_overbluff.json">River · Station + Overbluff</option><option value="flop_research.json">Flop 研究范围（较慢）</option><option value="flop_research_raises.json">Flop · 三街 All-in Raise（较慢）</option></select><button id="load-analysis-example">载入所选示例</button></div>
+  <label>完整分析配置<textarea id="analysis-config" rows="22" class="code" spellcheck="false" placeholder="显式载入示例或输入完整配置；不会自动代填真实手牌。"></textarea></label>
+  <div class="row"><button id="save-analysis">验证并保存配置</button><button id="solve-analysis" class="primary">真实求解</button></div><div id="analysis-result" class="result hidden"></div>
+  <details><summary>完整报告、策略与节点查询</summary><div class="row"><label>节点路径<input id="node-path" value="[]" class="code"></label><select id="node-variant"><option value="response">Hero BR</option><option value="model">固定模型</option><option value="baseline">均衡基线</option></select><button id="inspect-node">查询节点</button></div><pre id="solver-raw" class="raw"></pre></details>
+  <div id="analysis-tasks" class="task-list"></div>
+</section>
+<aside class="assistant panel">
+  <div class="panel-heading"><h2>AI 助手</h2><span id="agent-context" class="badge">剪辑项目</span></div>
+  <p class="hint">助手通过真实业务工具编辑项目、调用 Solver 和导出。编辑可撤销；未知信息保留未知。</p>
+  <label>使用额度<select id="provider"><option value="subscription">本人 ChatGPT / Codex 订阅</option><option value="api">OpenAI API · 独立计费</option></select></label>
+  <div id="subscription-settings"><label>正式登录方式<select id="subscription-mode"><option value="siwc">应用独立登录 · Sign in with ChatGPT</option><option value="managed">Codex app-server · 应用独立登录</option><option value="existing_cli">明确使用本机现有 Codex 登录</option></select></label><div class="row"><button id="apply-subscription">应用方式</button><button id="login" class="primary">登录 / 检查现有登录</button></div><div id="login-link" class="login-link hidden"></div><button id="cancel-login" class="hidden">取消等待登录</button></div>
+  <div id="api-settings" class="hidden"><label>API Key<input id="api-key" type="password" autocomplete="off" placeholder="仅提交到本地后端，内存保存"></label><label>API 模型<input id="api-model" placeholder="输入已获权限的模型 ID"></label><label class="check"><input id="api-paid" type="checkbox"> 我明确启用 OpenAI API 付费调用</label><button id="configure-api">应用 API 配置</button></div>
+  <div id="agent-status" class="status-box">正在检查登录状态…</div>
+  <label>模型（成功请求后才标记已验证）<input id="agent-model" list="model-options" placeholder="留空由所选 provider 选择候选默认模型"><datalist id="model-options"></datalist></label><div class="row"><button id="load-models">读取模型候选</button><button id="refresh-agent">检查状态</button></div>
+  <div class="row"><select id="session-list" aria-label="恢复助手会话"><option value="">新会话</option></select><button id="new-session">新会话</button></div>
+  <div id="chat" class="chat"><div class="chat-welcome">从记录到成片，都可以直接提出要求。<small>例如“把底池改成 120”，或“按当前时间线导出视频”。</small></div></div>
+  <div id="agent-task-status" class="muted"></div><label class="sr-only" for="agent-message">发送给助手</label><textarea id="agent-message" rows="3" placeholder="描述要完成的剪辑或分析…"></textarea><div class="row"><button id="send-agent" class="primary grow">发送给助手</button><button id="cancel-agent" disabled>取消</button></div>
+  <details class="agent-events"><summary>工具调用、结果和错误</summary><div id="agent-events"></div></details>
+</aside>
+</main>
+<footer>本地优先 · 素材不会自动发送给 AI · 订阅与 API 由你明确选择，不会静默切换</footer>
+</body>
+</html>

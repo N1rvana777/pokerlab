@@ -1,0 +1,14 @@
+{
+  "validated_cli_version": "codex-cli 0.162.0",
+  "schema_generated_with": "codex app-server generate-json-schema --experimental",
+  "transport": "stdio:// JSON lines",
+  "initialize_capabilities": {"experimentalApi": true},
+  "dynamic_tool_fields": ["type:function", "name", "description", "inputSchema"],
+  "dynamic_tool_request": "item/tool/call",
+  "dynamic_tool_response": {"success": true, "contentItems": [{"type": "inputText", "text": "JSON business result"}]},
+  "completion": "turn/completed: turn.status must equal completed",
+  "cancel": "turn/interrupt: threadId and turnId",
+  "resume": "thread/resume: persisted threadId",
+  "authentication": "SIWC app-owned OAuth, or explicit managed/existing CLI account/read; no auth.json access",
+  "important_local_schema_difference": "chatgptAuthTokens marked internal/unstable: not used. SIWC uses official Responses provider environment credentials."
+}

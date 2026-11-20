@@ -1,0 +1,17 @@
+{
+  "kind": "match",
+  "rules": {"small_blind": 50, "big_blind": 100, "ante": 0},
+  "players": 8,
+  "starting_stacks_bb": [100, 40, 250, 100, 60, 150, 100, 20],
+  "stack_mode": "carry",
+  "bust_policy": "rebuy",
+  "format": "session",
+  "hands": 2000,
+  "batch_hands": 100,
+  "seed": 3,
+  "agents": [
+    {"type": "rule"}, {"type": "random", "seed": 1}, {"type": "calling_station"},
+    {"type": "rule", "raise_score": 12.0, "call_score": 8.0}, {"type": "random", "seed": 2},
+    {"type": "calling_station"}, {"type": "rule"}, {"type": "random", "seed": 3}
+  ]
+}

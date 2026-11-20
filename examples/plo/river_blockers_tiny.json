@@ -1,0 +1,55 @@
+{
+ "name": "PLO4 river, 5 vs 6 weighted asymmetric hands with shared cards (tests/test_plo_blockers.py)",
+ "board": "Ah Kh 7d 4c 2s",
+ "pot": 1000,
+ "stacks": [
+  3000,
+  3000
+ ],
+ "big_blind": 100,
+ "ranges": [
+  {
+   "hands": [
+    "AsAdKsKd",
+    "AsQsJsTs",
+    "QdQcJdJc",
+    "9s8s6d5d",
+    "AcKcQhJh"
+   ],
+   "weights": [
+    4.0,
+    1.0,
+    2.0,
+    0.5,
+    3.0
+   ]
+  },
+  {
+   "hands": [
+    "AsKdQdJd",
+    "AdAcKsKc",
+    "QsQcTdTc",
+    "6s6c5s5c",
+    "JsJh9h8h",
+    "Th9c8d3h"
+   ],
+   "weights": [
+    2.0,
+    1.0,
+    5.0,
+    0.25,
+    1.5,
+    0.75
+   ]
+  }
+ ],
+ "bet_sizes": [
+  "1/2",
+  "1"
+ ],
+ "raise_sizes": [
+  "1"
+ ],
+ "max_raises": 1,
+ "showdown": "dense"
+}

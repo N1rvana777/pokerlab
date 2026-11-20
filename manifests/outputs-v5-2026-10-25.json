@@ -1,0 +1,63 @@
+{
+ "schema": "pokerlab.output-manifest/1",
+ "created": "2026-10-25T04:41:18-0700",
+ "git": {
+  "commit": "c26d5706bcd7541142d79308ae23723bd1ed1ae2",
+  "dirty": true
+ },
+ "hashed_roots": [
+  "outputs/plo/v5"
+ ],
+ "files": [
+  {
+   "path": "outputs/plo/v5/refctl/reference-dcfr500.npz",
+   "bytes": 9256117,
+   "mtime": "2026-10-25T03:52:50-0700",
+   "sha256": "b44bafa45f3b3b580527803549452bc8a44838b64c50d351800b95f64b7b21f4"
+  },
+  {
+   "path": "outputs/plo/v5/refctl/report.json",
+   "bytes": 4645,
+   "mtime": "2026-10-25T03:54:06-0700",
+   "sha256": "d54ec23301228e0ac815741d7f973bf61f600a7d0e23d6421efd9c685d862d47"
+  },
+  {
+   "path": "outputs/plo/v5/turn-agent-controlled/decisions.jsonl",
+   "bytes": 32665,
+   "mtime": "2026-10-25T04:25:56-0700",
+   "sha256": "90e4a53b9c844abc77c56cd00d46c3145473865bfec51f34a8c4f2e147fee765"
+  },
+  {
+   "path": "outputs/plo/v5/turn-agent-controlled/report.json",
+   "bytes": 21632,
+   "mtime": "2026-10-25T04:25:56-0700",
+   "sha256": "fec12417747b7fec35cb49ee4dc922b7d221bcfa8eb2d99081c374c0949e10d8"
+  },
+  {
+   "path": "outputs/plo/v5/turn-sample1500-short/average_strategy.npz",
+   "bytes": 331588286,
+   "mtime": "2026-10-25T04:34:06-0700",
+   "sha256": "20827022c79e004d48323f4420d8a5d0d8b0a25e9d6b44fb6109d2a3941c051b"
+  },
+  {
+   "path": "outputs/plo/v5/turn-sample1500-short/checkpoint.npz",
+   "bytes": 863113278,
+   "mtime": "2026-10-25T04:33:17-0700",
+   "sha256": "b3671fd5e8ea622b9b92f5ebf687ba34c9304decc5d25c6e8544e52364a0f54e"
+  },
+  {
+   "path": "outputs/plo/v5/turn-sample1500-short/config.json",
+   "bytes": 110805,
+   "mtime": "2026-10-25T04:26:32-0700",
+   "sha256": "e2a5d61baba711a18595c2d0596964b4b61be568af75adeacc57717b28026451"
+  },
+  {
+   "path": "outputs/plo/v5/turn-sample1500-short/report.json",
+   "bytes": 15691,
+   "mtime": "2026-10-25T04:34:07-0700",
+   "sha256": "2777fe0cdba1216eac04a873575bf516f1ef090d607c784f97d0e1bd99346213"
+  }
+ ],
+ "hashed_bytes": 1204143119,
+ "seconds": 0.7
+}

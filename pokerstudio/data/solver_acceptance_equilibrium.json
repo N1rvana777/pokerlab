@@ -1,0 +1,103 @@
+{
+  "job_id": "b314cf93ec6e4f14b0fe5ea354094559",
+  "input": {
+    "schema_version": 1,
+    "board": [
+      "2c",
+      "3d",
+      "7h",
+      "8s",
+      "9c"
+    ],
+    "players": [
+      "AsAh,QhJh",
+      "KsKh,TcTd"
+    ],
+    "pot": 20,
+    "stack": 30,
+    "bets": [
+      "10c",
+      "10c",
+      "10c"
+    ],
+    "hero": 0,
+    "mode": "equilibrium",
+    "target": 0.05,
+    "target_unit": "pot_pct",
+    "max_iterations": 1000,
+    "memory_budget_mb": 2048,
+    "profile": {
+      "traits": []
+    },
+    "compression": true,
+    "auto_suits": true,
+    "expand_suits": true,
+    "threads": 8,
+    "time_limit_seconds": 600
+  },
+  "ev": [
+    13.33328914642334,
+    6.66671085357666
+  ],
+  "independent_lp_oop_ev": 13.333333333333334,
+  "absolute_error": 4.41869099940817e-05,
+  "precision": {
+    "actual_chips": 0.00932455062866211,
+    "actual_pot_pct": 0.04662275314331055,
+    "baseline_exploitability_chips": 0.00932455062866211,
+    "baseline_iterations": 530,
+    "baseline_metric": "exploitability",
+    "baseline_stop_reason": "target_met",
+    "metric": "exploitability",
+    "numerical_floor_chips": 1.9999999494757503e-05,
+    "response_iterations": 0,
+    "stop_reason": "target_met",
+    "target_chips": 0.009999999776482582
+  },
+  "worker_resources": {
+    "state": "completed",
+    "supervisor_pid": 1156,
+    "wsl_memory": {
+      "MemTotal": 29425295360,
+      "MemAvailable": 28623437824
+    },
+    "limit_bytes": 2147483648,
+    "malloc_arena_max": 2,
+    "malloc_mmap_threshold": 131072,
+    "allocator_profile": "glibc-bounded-v1",
+    "native_pid": 1157,
+    "sampled_peak_rss_bytes": 1179648,
+    "sampled_peak_vms_bytes": 6787072,
+    "sampled_peak_swap_bytes": 0,
+    "exit_code": 0,
+    "process_reaped": true
+  },
+  "resource_budget": {
+    "ready": true,
+    "mode": "manual",
+    "configured_mb": 2048,
+    "requested_mb": 2048,
+    "effective_mb": 2048,
+    "automatic_budget_mb": 9560,
+    "stretch_budget_mb": 24576,
+    "windows": {
+      "total_mb": 32466,
+      "available_mb": 10711,
+      "reserve_mb": 2048,
+      "safe_mb": 9560,
+      "vm_idle_mb": 897
+    },
+    "wsl": {
+      "total_mb": 28062,
+      "available_mb": 27307,
+      "reserve_mb": 512,
+      "safe_mb": 26795
+    },
+    "max_budget_mb": 24576,
+    "error": null,
+    "measured_at_unix_ms": 1793617366463,
+    "probe_seconds": 0.0940000000409782,
+    "prelaunch_effective_mb": 2048
+  },
+  "config_sha256": "38ab16b1bab470ec4cefb14d445bdf488a6326ac0e54e1013d59a46d2a786f1a"
+}

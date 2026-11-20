@@ -1,0 +1,21 @@
+/target/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.venv/
+/outputs/
+.env
+.env.*
+!.env.example
+
+# Added 2026-10-25 with the local Git baseline (DECISIONS D21)
+# Vendored engine: its own git checkout at the pinned revision in Cargo.toml;
+# the local modifications are tracked as third_party/patches/expanded-suits.patch.
+/third_party/postflop-solver/
+# Personal tool state
+.claude/settings.local.json
+.playwright-mcp/
+*.partial
+
+# public snapshot
+.claude/

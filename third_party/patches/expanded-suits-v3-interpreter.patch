@@ -1,0 +1,403 @@
+diff --git a/src/game/base.rs b/src/game/base.rs
+index f1cc0f0..3a09184 100644
+--- a/src/game/base.rs
++++ b/src/game/base.rs
+@@ -138,6 +138,14 @@ impl PostFlopGame {
+         Ok(game)
+     }
+ 
++    /// PokerLab extension: retain every public-card branch for asymmetric node locks.
++    /// Default constructors keep upstream suit-isomorphism behavior unchanged.
++    pub fn with_config_unmerged(card_config: CardConfig, action_tree: ActionTree) -> Result<Self, String> {
++        let mut game = Self::new();
++        game.update_config_internal(card_config, action_tree, true)?;
++        Ok(game)
++    }
++
+     /// Updates the game configuration. The solved result will be lost.
+     #[inline]
+     pub fn update_config(
+@@ -145,6 +153,27 @@ impl PostFlopGame {
+         card_config: CardConfig,
+         action_tree: ActionTree,
+     ) -> Result<(), String> {
++        self.update_config_internal(card_config, action_tree, false)
++    }
++
++    fn update_config_internal(
++        &mut self,
++        card_config: CardConfig,
++        action_tree: ActionTree,
++        expand_suits: bool,
++    ) -> Result<(), String> {
++        *self = Self::prepare_config(card_config, action_tree, expand_suits)?;
++        self.build_prepared()
++    }
++
++    /// PokerLab: card tables and exact storage counts before allocating the node arena.
++    pub fn prepare_config(card_config: CardConfig, action_tree: ActionTree, expand_suits: bool) -> Result<Self, String> {
++        let mut game = Self::new();
++        game.prepare_internal(card_config, action_tree, expand_suits)?;
++        Ok(game)
++    }
++
++    fn prepare_internal(&mut self, card_config: CardConfig, action_tree: ActionTree, expand_suits: bool) -> Result<(), String> {
+         self.state = State::ConfigError;
+ 
+         if !action_tree.invalid_terminals().is_empty() {
+@@ -161,6 +190,20 @@ impl PostFlopGame {
+ 
+         self.check_card_config()?;
+         self.init_card_fields();
++        if expand_suits {
++            self.isomorphism_ref_turn.clear();
++            self.isomorphism_card_turn.clear();
++            self.isomorphism_swap_turn = Default::default();
++            self.isomorphism_ref_river = vec![Vec::new(); 52];
++            self.isomorphism_card_river = Default::default();
++            self.isomorphism_swap_river = Default::default();
++        }
++        Ok(())
++    }
++
++    /// PokerLab: materialize only after the caller has checked memory_plan against its budget.
++    pub fn build_prepared(&mut self) -> Result<(), String> {
++        if self.state != State::ConfigError {return Err("Game is not prepared".into());}
+         self.init_root()?;
+ 
+         self.state = State::TreeBuilt;
+@@ -171,6 +214,33 @@ impl PostFlopGame {
+         Ok(())
+     }
+ 
++    /// [arena bytes, action elements, IP elements, chance elements, card/misc bytes,
++    /// opponent lock elements, opponent lock nodes]. No expanded nodes allocated.
++    pub fn memory_plan(&self, opponent: usize) -> [u64; 7] {
++        fn visit(node: &ActionTreeNode, fresh: bool, hands: [u64;2], opponent: usize, rows: &mut [[u64;5];3]) {
++            if node.player & PLAYER_TERMINAL_FLAG != 0 {return;}
++            let row=&mut rows[node.board_state as usize];
++            if node.player & PLAYER_CHANCE_FLAG != 0 {
++                let previous=node.player & PLAYER_MASK;
++                if previous < 2 {row[2]+=hands[(previous ^ 1) as usize];}
++            } else {
++                let n=node.actions.len() as u64*hands[node.player as usize];
++                row[0]+=n;
++                if fresh {row[1]+=hands[1];}
++                if node.player as usize==opponent {row[3]+=n;row[4]+=1;}
++            }
++            for child in &node.children {visit(&child.lock(),node.player & PLAYER_CHANCE_FLAG != 0,hands,opponent,rows);}
++        }
++        let nodes=self.count_num_nodes();
++        let public=count_num_action_nodes(&self.action_root.lock());
++        let mut rows=[[0;5];3];
++        visit(&self.action_root.lock(),true,[self.private_cards[0].len() as u64,self.private_cards[1].len() as u64],opponent,&mut rows);
++        let mut sums=[0;5];
++        for s in 0..3 {let factor=if public[s]==0 {0}else{nodes[s]/public[s]};for i in 0..5 {sums[i]+=rows[s][i]*factor;}}
++        [nodes.iter().sum::<u64>()*mem::size_of::<MutexLike<PostFlopNode>>() as u64,
++         sums[0],sums[1],sums[2],self.memory_usage_internal(),sums[3],sums[4]]
++    }
++
+     /// Sets the bunching effect configuration.
+     ///
+     /// **Warning**: Enabling the bunching effect will significantly slow down the solving process.
+diff --git a/src/game/interpreter.rs b/src/game/interpreter.rs
+index d44d63a..26fca0b 100644
+--- a/src/game/interpreter.rs
++++ b/src/game/interpreter.rs
+@@ -3,6 +3,31 @@ use crate::interface::*;
+ use crate::sliceop::*;
+ use crate::utility::*;
+ 
++/// A lightweight snapshot of the interpreter cursor and its cached reach/values.
++///
++/// It contains no tree nodes, strategies, regrets, or locks. Restore it only on the
++/// same game without rebuilding/allocating/finalizing the game or changing an
++/// ancestor's strategy. Descendant strategy edits are deliberately preserved.
++#[derive(Clone, Debug, PartialEq)]
++pub struct InterpreterCheckpoint {
++    arena_address: usize,
++    arena_len: usize,
++    storage_address: usize,
++    game_state: u8,
++    action_history: Vec<usize>,
++    node_history: Vec<usize>,
++    is_normalized_weight_cached: bool,
++    turn: Card,
++    river: Card,
++    turn_swapped_suit: Option<(u8, u8)>,
++    turn_swap: Option<u8>,
++    river_swap: Option<(u8, u8)>,
++    total_bet_amount: [i32; 2],
++    weights: [Vec<f32>; 2],
++    normalized_weights: [Vec<f32>; 2],
++    cfvalues_cache: [Vec<f32>; 2],
++}
++
+ /// Decodes the encoded `i16` slice to the `f32` slice.
+ #[inline]
+ fn decode_signed_slice(slice: &[i16], scale: f32) -> Vec<f32> {
+@@ -10,7 +35,223 @@ fn decode_signed_slice(slice: &[i16], scale: f32) -> Vec<f32> {
+     slice.iter().map(|&x| x as f32 * decoder).collect()
+ }
+ 
++#[cfg(test)]
++mod checkpoint_tests {
++    use super::*;
++    use crate::{card_from_str, flop_from_str};
++
++    fn game(compressed: bool, expanded: bool) -> PostFlopGame {
++        let cards = CardConfig {
++            range: ["AA,AKs,QQ".parse().unwrap(), "JJ,TT,KQs".parse().unwrap()],
++            flop: flop_from_str("9h8h2h").unwrap(),
++            ..Default::default()
++        };
++        let sizing = || ("50%", "").try_into().unwrap();
++        let tree = ActionTree::new(TreeConfig {
++            starting_pot: 20,
++            effective_stack: 40,
++            flop_bet_sizes: [sizing(), sizing()],
++            turn_bet_sizes: [sizing(), sizing()],
++            river_bet_sizes: [sizing(), sizing()],
++            ..Default::default()
++        }).unwrap();
++        let mut game = if expanded {
++            PostFlopGame::with_config_unmerged(cards, tree).unwrap()
++        } else {
++            PostFlopGame::with_config(cards, tree).unwrap()
++        };
++        game.allocate_memory(compressed);
++        game
++    }
++
++    fn choose(game: &mut PostFlopGame, matches: impl Fn(&Action) -> bool) -> usize {
++        let action = game.available_actions().iter().position(matches).unwrap();
++        game.play(action);
++        action
++    }
++
++    #[test]
++    fn interpreter_checkpoint_preserves_descendant_edits_and_matches_replay() {
++        for compressed in [false, true] {
++            for expanded in [false, true] {
++                let mut game = game(compressed, expanded);
++                let hands = game.private_cards(0).len();
++                // A suit-symmetric non-uniform root policy exercises conditional reach.
++                let mut root_strategy = vec![0.25; hands * 2];
++                root_strategy[hands..].fill(0.75);
++                game.lock_current_strategy(&root_strategy);
++                choose(&mut game, |a| matches!(a, Action::Bet(_)));
++                choose(&mut game, |a| *a == Action::Call);
++                game.play(card_from_str("3d").unwrap() as usize);
++                if !expanded { assert!(game.turn_swap.is_some()); }
++                choose(&mut game, |a| matches!(a, Action::Bet(_)));
++
++                let actions = game.available_actions();
++                let hands = game.private_cards(game.current_player()).len();
++                let mut locked = vec![0.0; hands * actions.len()];
++                let fold = actions.iter().position(|a| *a == Action::Fold).unwrap();
++                let call = actions.iter().position(|a| *a == Action::Call).unwrap();
++                locked[fold * hands..(fold + 1) * hands].fill(0.4);
++                locked[call * hands..(call + 1) * hands].fill(0.6);
++                game.lock_current_strategy(&locked);
++                game.cache_normalized_weights();
++                let parent = game.checkpoint_interpreter();
++                assert!(parent.is_normalized_weight_cached);
++                assert!(parent.total_bet_amount[0] > parent.total_bet_amount[1]);
++
++                game.play(call);
++                let uncached = game.checkpoint_interpreter();
++                assert!(!uncached.is_normalized_weight_cached);
++                game.cache_normalized_weights();
++                game.restore_interpreter(&uncached);
++                assert_eq!(game.checkpoint_interpreter(), uncached);
++                game.play(card_from_str("4s").unwrap() as usize);
++                if !expanded { assert!(game.river_swap.is_some()); }
++                let leaf_path = game.history().to_vec();
++                let hands = game.private_cards(game.current_player()).len();
++                let mut edited = vec![0.0; hands * game.available_actions().len()];
++                edited[..hands].fill(1.0);
++                game.replace_current_strategy(&edited);
++                let expected_strategy = game.strategy();
++                game.cache_normalized_weights();
++                let river = game.checkpoint_interpreter();
++                choose(&mut game, |a| *a == Action::Check);
++                game.restore_interpreter(&river);
++                assert_eq!(game.checkpoint_interpreter(), river);
++
++                game.restore_interpreter(&parent);
++                assert_eq!(game.checkpoint_interpreter(), parent);
++                assert_eq!(game.current_locking_strategy().unwrap(), locked);
++                game.apply_history(&leaf_path);
++                assert_eq!(game.strategy(), expected_strategy);
++                // Replay uses the edited descendant policy, but it must not change
++                // reach at this unchanged ancestor or undo the descendant edits.
++                game.apply_history(&parent.action_history);
++                game.cache_normalized_weights();
++                assert_eq!(game.checkpoint_interpreter(), parent);
++                game.apply_history(&leaf_path);
++                assert_eq!(game.strategy(), expected_strategy);
++            }
++        }
++    }
++
++    #[test]
++    fn interpreter_checkpoint_keeps_zero_reach_and_rejects_other_game() {
++        let mut game = game(true, false);
++        let hands = game.private_cards(0).len();
++        let mut locked = vec![0.0; hands * 2];
++        locked[..hands].fill(1.0);
++        game.lock_current_strategy(&locked);
++        choose(&mut game, |a| matches!(a, Action::Bet(_)));
++        assert!(game.weights(0).iter().all(|&w| w == 0.0));
++        game.cache_normalized_weights();
++        let zero = game.checkpoint_interpreter();
++        choose(&mut game, |a| *a == Action::Call);
++        game.play(card_from_str("3d").unwrap() as usize);
++        game.cache_normalized_weights();
++        game.restore_interpreter(&zero);
++        assert_eq!(game.checkpoint_interpreter(), zero);
++        game.apply_history(&zero.action_history);
++        game.cache_normalized_weights();
++        assert_eq!(game.checkpoint_interpreter(), zero);
++
++        let mut other = self::game(true, false);
++        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            other.restore_interpreter(&zero);
++        }));
++        assert!(rejected.is_err());
++    }
++
++    #[test]
++    fn interpreter_checkpoint_restores_solved_value_caches() {
++        let cards = CardConfig {
++            range: ["AA,AKs,QQ".parse().unwrap(), "JJ,TT,KQs".parse().unwrap()],
++            flop: flop_from_str("9h8h2h").unwrap(),
++            turn: card_from_str("3d").unwrap(),
++            river: card_from_str("4s").unwrap(),
++        };
++        let tree = ActionTree::new(TreeConfig {
++            initial_state: BoardState::River,
++            starting_pot: 20,
++            effective_stack: 40,
++            river_bet_sizes: [("50%", "").try_into().unwrap(), ("50%", "").try_into().unwrap()],
++            ..Default::default()
++        }).unwrap();
++        let mut game = PostFlopGame::with_config(cards, tree).unwrap();
++        game.allocate_memory(true);
++        finalize(&mut game);
++        choose(&mut game, |a| matches!(a, Action::Bet(_)));
++        game.cache_normalized_weights();
++        assert!(game.cfvalues_cache[0].iter().any(|&v| v != 0.0));
++        let expected = [game.expected_values(0), game.expected_values(1)];
++        let parent = game.checkpoint_interpreter();
++        game.back_to_root();
++        choose(&mut game, |a| *a == Action::Check);
++        choose(&mut game, |a| matches!(a, Action::Bet(_)));
++        game.cache_normalized_weights();
++        game.restore_interpreter(&parent);
++        assert_eq!(game.checkpoint_interpreter(), parent);
++        assert_eq!([game.expected_values(0), game.expected_values(1)], expected);
++    }
++}
++
+ impl PostFlopGame {
++    /// Saves the interpreter state in O(number of private hands + history depth).
++    ///
++    /// Capture after editing the current strategy, then use this checkpoint to
++    /// return from descendant visits without replaying every ancestor action.
++    pub fn checkpoint_interpreter(&self) -> InterpreterCheckpoint {
++        assert!(self.state > State::Uninitialized, "Game is not successfully initialized");
++        InterpreterCheckpoint {
++            arena_address: self.node_arena.as_ptr() as usize,
++            arena_len: self.node_arena.len(),
++            storage_address: self.storage1.as_ptr() as usize,
++            game_state: self.state as u8,
++            action_history: self.action_history.clone(),
++            node_history: self.node_history.clone(),
++            is_normalized_weight_cached: self.is_normalized_weight_cached,
++            turn: self.turn,
++            river: self.river,
++            turn_swapped_suit: self.turn_swapped_suit,
++            turn_swap: self.turn_swap,
++            river_swap: self.river_swap,
++            total_bet_amount: self.total_bet_amount,
++            weights: self.weights.clone(),
++            normalized_weights: self.normalized_weights.clone(),
++            cfvalues_cache: self.cfvalues_cache.clone(),
++        }
++    }
++
++    /// Restores only the interpreter cursor/reach/cache, leaving all policies intact.
++    ///
++    /// The checkpoint is invalid after configuration, allocation, or solving-state
++    /// changes. It also must not be used after editing an ancestor's policy: its
++    /// stored reach would then describe the old ancestor policy.
++    pub fn restore_interpreter(&mut self, checkpoint: &InterpreterCheckpoint) {
++        assert!(
++            self.state > State::Uninitialized
++                && self.state as u8 == checkpoint.game_state
++                && self.node_arena.as_ptr() as usize == checkpoint.arena_address
++                && self.node_arena.len() == checkpoint.arena_len
++                && self.storage1.as_ptr() as usize == checkpoint.storage_address,
++            "Interpreter checkpoint belongs to a different or rebuilt game"
++        );
++        self.action_history.clone_from(&checkpoint.action_history);
++        self.node_history.clone_from(&checkpoint.node_history);
++        self.is_normalized_weight_cached = checkpoint.is_normalized_weight_cached;
++        self.turn = checkpoint.turn;
++        self.river = checkpoint.river;
++        self.turn_swapped_suit = checkpoint.turn_swapped_suit;
++        self.turn_swap = checkpoint.turn_swap;
++        self.river_swap = checkpoint.river_swap;
++        self.total_bet_amount = checkpoint.total_bet_amount;
++        for player in 0..2 {
++            self.weights[player].clone_from(&checkpoint.weights[player]);
++            self.normalized_weights[player].clone_from(&checkpoint.normalized_weights[player]);
++            self.cfvalues_cache[player].clone_from(&checkpoint.cfvalues_cache[player]);
++        }
++    }
++
+     /// Moves the current node back to the root node.
+     #[inline]
+     pub fn back_to_root(&mut self) {
+@@ -846,6 +1087,27 @@ impl PostFlopGame {
+         ret
+     }
+ 
++    /// PokerLab: canonical identity for compiling a suit-invariant model once.
++    pub fn current_node_id(&self) -> usize {self.node_index(&self.node())}
++
++    /// PokerLab: replace this node's strategy in place, mapping actual suits to canonical suits.
++    /// Caller must NOT run CFR after compiling a frozen opponent this way.
++    pub fn replace_current_strategy(&mut self, strategy: &[f32]) {
++        assert!(self.state == State::MemoryAllocated);
++        assert!(!self.is_terminal_node() && !self.is_chance_node());
++        let player=self.current_player();
++        let hands=self.num_private_hands(player);
++        let mut values=strategy.to_vec();
++        let mut node=self.node();
++        assert_eq!(values.len(),node.num_actions()*hands);
++        assert!(!node.is_locked);
++        values.chunks_exact_mut(hands).for_each(|chunk|self.apply_swap(chunk,player,true));
++        if self.is_compression_enabled {
++            let scale=encode_unsigned_slice(node.strategy_compressed_mut(),&values);
++            node.set_strategy_scale(scale);
++        } else {node.strategy_mut().copy_from_slice(&values);}
++    }
++
+     /// Returns the total bet amount of each player (OOP, IP).
+     #[inline]
+     pub fn total_bet_amount(&self) -> [i32; 2] {
+diff --git a/src/game/mod.rs b/src/game/mod.rs
+index 33d9a19..60ae7df 100644
+--- a/src/game/mod.rs
++++ b/src/game/mod.rs
+@@ -3,6 +3,8 @@ mod evaluation;
+ mod interpreter;
+ mod node;
+ 
++pub use interpreter::InterpreterCheckpoint;
++
+ #[cfg(feature = "bincode")]
+ mod serialization;
+ 

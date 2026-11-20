@@ -1,0 +1,83 @@
+{
+  "job_id": "327ab963d555433287ba6b1df0b61aee",
+  "input": {
+    "schema_version": 1,
+    "board": [
+      "2c",
+      "3d",
+      "7h",
+      "8s",
+      "9c"
+    ],
+    "players": [
+      "AsAh,QhJh",
+      "KsKh,TcTd,AcJd"
+    ],
+    "pot": 20,
+    "stack": 30,
+    "bets": [
+      "10c",
+      "10c",
+      "10c"
+    ],
+    "hero": 0,
+    "mode": "fixed",
+    "target": 0.05,
+    "target_unit": "pot_pct",
+    "max_iterations": 1000,
+    "memory_budget_mb": 2048,
+    "profile": {
+      "traits": [
+        {
+          "kind": "station",
+          "strength": 2.0,
+          "streets": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "kind": "overbluff",
+          "strength": 2.0,
+          "streets": [
+            3,
+            4,
+            5
+          ]
+        }
+      ]
+    },
+    "compression": true,
+    "auto_suits": true,
+    "expand_suits": true,
+    "threads": 8,
+    "time_limit_seconds": 600
+  },
+  "hero_best_response_ev": 14.686494827270508,
+  "same_model_baseline_hero_ev": 13.32844066619873,
+  "independent_policy_ev": 14.68649446964264,
+  "hero_improvement": 1.3580541610717773,
+  "opponent_unchanged": true,
+  "policy_validation": {
+    "absolute_error": 0.0,
+    "exported_br_ev": 14.686494827270508,
+    "method": "separate upstream sum-product traversal of exported full-tree policy; no maximization",
+    "reevaluated_ev": 14.686494827270508,
+    "tolerance_chips": 0.00039999998989515007
+  },
+  "precision": {
+    "actual_chips": 0.0,
+    "actual_pot_pct": 0.0,
+    "baseline_exploitability_chips": 0.009438872337341309,
+    "baseline_iterations": 530,
+    "baseline_metric": "exploitability",
+    "baseline_stop_reason": "target_met",
+    "metric": "hero_response_gap",
+    "numerical_floor_chips": 1.9999999494757503e-05,
+    "response_iterations": 0,
+    "stop_reason": "target_met",
+    "target_chips": 0.009999999776482582
+  },
+  "config_sha256": "f6e237dc9e7020bc50ac8d40b30162c4fbe90a020f42b86da891ebe44cb718cc"
+}

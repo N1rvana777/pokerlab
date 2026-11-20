@@ -1,0 +1,72 @@
+{
+ "name": "PLO4 turn+river, tiny explicit weighted ranges (LP-checkable)",
+ "board": "Ks 9h 7d 4c",
+ "big_blind": 100,
+ "pot_bb": 10,
+ "stacks_bb": [
+  5,
+  5
+ ],
+ "ranges": [
+  {
+   "hands": [
+    "2d4sJcJh",
+    "2d5sJsKh",
+    "2sJdJsAs",
+    "3s6c6dKh",
+    "4s5sJdJs",
+    "6c8d9cQh"
+   ],
+   "weights": [
+    0.19318,
+    0.082705,
+    0.121791,
+    0.153889,
+    0.202338,
+    0.246097
+   ]
+  },
+  {
+   "hands": [
+    "4d5dQdQh",
+    "4sQsKcKd",
+    "5dJdAcAd",
+    "5h8sTdKc",
+    "6dJsQcQs",
+    "TcThKcAh"
+   ],
+   "weights": [
+    0.048212,
+    0.312607,
+    0.239152,
+    0.002109,
+    0.131674,
+    0.266246
+   ]
+  }
+ ],
+ "range_source": "6 hands per player drawn (seed 3) from the baseline-v1 posterior after: preflop button raise / big blind call; flop big blind check, button bet, big blind call. Weights are the exact posterior weights of those hands, renormalised. Player 0 = big blind.",
+ "bet_sizes": [
+  "1/3",
+  "1/2",
+  "2/3",
+  "1"
+ ],
+ "raise_sizes": [
+  "1/3",
+  "1/2",
+  "2/3",
+  "1"
+ ],
+ "include_min_raise": true,
+ "include_max_raise": true,
+ "min_bet": 100,
+ "turn_max_raises": 1,
+ "river_max_raises": 1,
+ "river_cards": "all",
+ "solver": {
+  "algorithm": "dcfr",
+  "iterations": 500,
+  "seed": 0
+ }
+}
