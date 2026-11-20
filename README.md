@@ -35,9 +35,210 @@ A research workbench for heads-up poker. It solves no-limit hold'em postflop spo
 
 ## Status
 
-The hold'em workbench and the review assistant are in active development. The Omaha line has been paused since October 2026. To start the workbench, run `python -m pokerlab.solver.server` and open http://127.0.0.1:8765; setup details are below, in Chinese.
+The hold'em workbench and the review assistant are in active development. The Omaha line has been paused since October 2026. To start the workbench, run `python -m pokerlab.solver.server` and open http://127.0.0.1:8765; setup details are in the full README below.
 
-AI coding agents (Claude Code, OpenAI Codex) wrote much of the code under my direction. `CLAUDE.md` and `AGENTS.md` are their instructions, and `docs/DECISIONS.md` records which decisions were mine. The rest of this README and the documents in `docs/` are in Chinese.
+AI coding agents (Claude Code, OpenAI Codex) wrote much of the code under my direction. `CLAUDE.md` and `AGENTS.md` are their instructions, and `docs/DECISIONS.md` records which decisions were mine. The full README follows, first in English and then in the original Chinese; the documents in `docs/` are in Chinese.
+
+---
+
+## Full README in English
+
+*This section is an English translation of the Chinese README further down. The interface is in Chinese, so UI labels are quoted in Chinese with an English gloss. Paths under `outputs/` point to local files that are not in this public copy.*
+
+This is a runnable phase-1 research workbench: heads-up flop, turn and river spots, stackable opponent traits, a frozen full opponent strategy, the hero's information-set best response, and views of individual combos and later nodes. The full requirements are in the [original prompt](Codex_Poker_Solver_Prompt.md) and the measured numbers and limits in the [progress log](docs/PROGRESS.md) (both in Chinese). The earlier math code and phase-0 documents are kept.
+
+### Running locally
+
+Run one command in **PowerShell** from the project root:
+
+```powershell
+python -m pokerlab.solver.server
+```
+
+Open **<http://127.0.0.1:8765>** in a browser. Solves call the prebuilt Rust engine in Ubuntu under WSL automatically; the web service does not need to run inside WSL. The service listens on localhost only, and Ctrl+C exits and cancels its running jobs.
+
+Two desktop shortcuts, `Pokerstudio.lnk` and `Pokerlab Solver.lnk`, are installed on the local machine; their targets, arguments, working directories and icons were read back and checked. The installer is `powershell -ExecutionPolicy Bypass -File pokerstudio/install-desktop.ps1`. A cold start, a second launch that reuses the running backend, and stopping a backend the launcher started have all been tested; the address-bar-free view in a real standalone Windows window has not been accepted yet. Closing the window keeps the service and its jobs running. Port conflicts, logs and explicit shutdown are covered in [desktop launch](pokerstudio/docs/DESKTOP.md); the command-line entry point still works.
+
+2026-10-08: the local backend on port 8765 was updated. The interface works in bb (big blinds); at that point the pot and remaining stacks took whole numbers of bb (decimal input came later; see "Inputs, units and limits"). 16-bit compression, automatic safe suit isomorphism and 8 threads by default are kept. The front end turns on automatic memory by default, including for old examples that do not set `memory_auto`, so they are no longer held to their 4096 MiB manual cap. It shows live available memory for Windows and WSL and the safe budget, and measures again once a solve holds the serial lock. The manual cap applies only when automatic mode is turned off. On the backend, old saved requests without `memory_auto` and CLI runs are still treated as manual budgets, and explicit caps are never raised silently. Export configuration sits at the top of the sidebar.
+
+The historical study "SPR20 multi-size memory optimisation check, baseline short of 0.1%" is kept. Its original measurement used compression and automatic isomorphism, 16 threads, an 1,800-second limit and an automatic budget; 500 iterations did not reach 0.1%. A cold start took about 11 min 33 s, and the full frozen-opponent pipeline reusing that baseline about 3 min 50 s. Ordinary jobs no longer have an automatic timeout, so this is kept only as the original measurement. New strategy snapshots store the 16-bit data directly, so reopening does not quantise again; the old format is still readable, and the bb interface did not recompute or rewrite historical reports.
+
+2026-10-13: the full large tree from this run is saved as "**完整Flop 三街三尺寸3x · 0.1%达标 · 2026-10-13**" (full flop tree, three streets, three sizes, 3x raises, 0.1% reached; study ID `f79af0c4219441a284f16d34a7da9d39`). Open the desktop Pokerlab or the browser address above, refresh the page, pick that name under "已保存研究" (Saved studies) and click "打开" (Open). It was reopened in a real headless Edge browser in 45.281 s, keeping the original 0.1% target, 9h8h2c, 203/449 combos and all three full strategies, and showing 169 strategy cells and 4 legal actions with no JS errors or stale markers. One real root-node query on the saved model completed; the native process exited with code 0 and was reaped, and no CFR or best response was rerun. The test only simulated the external assistant's state and session, with an isolated assistant configuration. Evidence: `outputs/performance-20261013-v2/completed-workbench-acceptance.json` and the screenshot `outputs/performance-20261013-v2/completed-workbench.png`. The current whole-bb engine rounds the root bets to 3, 5 and 8 bb, which is 37.5%, 62.5% and 100% of the pot; the 33/66/100% inputs in the configuration are kept, and they do not mean fractional-bb bets are supported.
+
+Walkthrough:
+
+2026-10-13: the user chose to favour everyday exploration. The equilibrium baseline for a new spot now defaults to **0.5% of the starting pot**, and this can be changed. "新建日常局面" (New everyday spot) in the sidebar builds that default configuration from the selected example; "载入示例" (Load example), imports and opening a saved study keep their explicit precision. Persisted assistant state is not rewritten by refreshing the page. This target applies only to the equilibrium baseline; the response gap of the best response to a frozen opponent is still measured separately. The full large tree in this run kept its original 0.1% target and reached it. Edits or imports made during start-up take priority over a late-arriving default configuration, and nothing is written back before the first backend version has been read.
+
+1. Keep the default "Flop 实际范围 + All-in Raise" (flop, real ranges, all-in raise) example: 9h8h2c, a 100 bb pot and 200 bb effective stacks.
+   The **OOP range / IP range** tables on the left are fully expanded by default, with IP below OOP; "定位 IP 范围" (Go to IP range) jumps straight to IP. Click a cell to select it and click again to clear it; the mouse wheel over a cell changes it by 5 percentage points, or by 1 with Shift, within 0–100%. By default each of the 169 hand classes spreads its weight evenly over its suit combinations; "查看具体花色" (Show suits) allows advanced asymmetric ranges. Text and grid stay in sync and support import and export; combos that conflict with the board are kept but do not count toward the effective range.
+   The "翻前总范围 %" (Preflop range %) slider selects the top X% of the 1,326 combos by weight, counting 6 per pair, 4 per suited hand and 12 per offsuit hand; the boundary hand class gets a mixed weight that is equal across all its suits. 70% corresponds to 928.2 weighted raw combos. The ordering uses the preflop heuristic template described on the page, not current-street GTO or measured equity, and is not re-sorted by board. Changing the total rebuilds a suit-uniform template and can be undone; the percentage includes board-conflicting combos.
+   Bet sizes for each street can be multi-selected by clicking (blue means selected); the input box below accepts custom sizes, at most three.
+2. Click "求均衡基线" (Solve equilibrium baseline). Check the target precision, the precision reached and the stop reason.
+3. Pick a combined trait preset, or set light, medium or heavy strength and the streets for Station, Overbluff and giving up after barrelling. Generate the opponent preview, then freeze it and compute the best response. Advanced parameters 1/2/3 correspond to those strengths; they are not percentages or calibrated population statistics. To compare only river give-ups, tick only River for the third trait and leave the other inputs unchanged.
+4. The result grid is coloured by the actual action probabilities, with a legend and range-weighted overall frequencies above it. Click AA to see its suit combos, action probabilities, equity and per-action EV. Hover over a cell for its frequency; hatching means zero reach. Use the action buttons and board cards to move to later nodes, and switch between the baseline, the opponent model and the best response. At an opponent node you can see the actual frequency change from baseline to frozen model; both columns use the same conditional range weights of the current model.
+5. Save the study and reopen it from the saved list. Changing inputs marks old results as stale. A save contains the final strategy for the whole tree, not CFR regrets or resumable state.
+
+Node locking: go to a decision node (turn and river included) → click a row in the combo table, or choose the current grid hand group, the combos selected by the current Filters, or all legal combos → enter a full action distribution, click "100% <action>", or use "按总频率锁定" (lock by total frequency) to fill in a target frequency → keep the node lock → either freeze the opponent in step 3 and optimise only the hero, or in step 4 lock only these nodes and re-solve for both players. Step 4 shows frequencies and EV before and after locking; locks on hero nodes take effect only in step 4. The lock list can locate and delete locks, and restoring the range template clears them in bulk; undo and redo cover the last 100 input edits. Changing model traits does not delete locks; after the spot or the sizes change, old locks are explicitly rejected, and you must restore the spot or remove them.
+
+The "命名范围库／玩家特质库" (named range library / player trait library) saves local profiles. The player library keeps only traits that carry across spots, and node locks are saved with the study. Configurations can be exported and imported as JSON to copy a model. Node analysis shows the equity distribution, and the combo table sorts and filters by EV, equity and change in value. "模型敏感性" (Model sensitivity) runs three frozen models, light, central and heavy, one after another, and reports for each the gain against that same model and any flips in the hero's root action; the three results do not share one opponent.
+
+The flow above, including cancelling a job, was run end to end in a headless local Edge browser driven by Playwright; this is not a manual browser acceptance. Screenshot: `outputs/workbench-flop.png`.
+
+Rebuild: `powershell -ExecutionPolicy Bypass -File scripts/build.ps1`. To install the Python package in a new environment: `python -m pip install -e '.[dev,solver]'`; browser tests also need `.[browser-test]`. The toolchain is Rust 1.75 on Ubuntu under WSL. The engine is pinned to b-inary/postflop-solver commit `9d1509fe5077d019825f833eed04b16d342dfda1` (AGPL-3.0-or-later), plus a documented [full suit-branch patch](third_party/patches/README.md). The build script checks the whole patch, and the original source can be restored from the pinned commit. When this was written the project root had no Git repository, and nothing is committed or pushed automatically.
+
+The original CLI still works: `python -m pokerlab.solver examples/river.json --output outputs/my-river.json`. Existing outputs are never overwritten. The CLI saves the configuration and the report by default; the workbench also saves the full strategy.
+
+### Pokerstudio: local video editing and agent
+
+See [Pokerstudio](pokerstudio/README.md). From the repository root, run `python -X utf8 -m pokerstudio.server` and open <http://127.0.0.1:8770>. It supports hand, subtitle and animated overlays, real MP4 export, an adapter to the existing solver, and an agent on a subscription or an API; its own documents state what has actually been accepted and the limits. A separate analysis page is at `/analysis`, and the workbench runs as before.
+
+### Assistant inside the solver workbench
+
+The assistant is built directly into the original solver workbench on port 8765. It has its own configuration, sessions, authentication and solver tools, and at run time it does not depend on the 8770 service or a Pokerstudio instance; it reuses the two-provider protocol implementation. Subscription access uses the official Sign in with ChatGPT, or an explicitly chosen existing CLI login. The API needs its own key and explicit permission to pay, and hitting a subscription limit never falls back to the API.
+
+The assistant only works with solver configurations, real jobs, results, node queries and cancellation. Configuration changes are version-checked, so late replies and tool events cannot roll back a spot that has already been synced; on a concurrent conflict the form edits are kept and must be confirmed with "同步当前局面" (Sync current spot). Finished numbers come from real reports, and results are marked stale when inputs change. Data is stored in `outputs/agent/` by default, and the app's own authentication in `%LOCALAPPDATA%\Pokerlab\agent` (set `POKERLAB_AUTH_HOME` to change it); API keys and payment permission are not persisted.
+
+On 2026-10-08 a real subscription acceptance passed through this entry point. `existing_cli` / `gpt-6.1-sol` changed the pot of the public small river example from 25 to 20 bb by actually calling the tools to read the configuration, change it, start the job, query it and read the report, and the job completed. Root EVs were 13.3332891464 / 6.6667108536 bb, and measured exploitability was 0.00932455063 bb (0.0466227531% of the pot), meeting the 0.05% target. It reused a cached baseline, so the 530 recorded iterations were not new in this run. The native process exited with code 0 and was reaped, and the API was neither configured nor called. Evidence: `outputs/solver-agent-acceptance-20261008/acceptance.json`. The report and the assistant's answer were read in Firefox, and the units, login state and both players' 169 cells on the main 8765 page were checked; the local `existing_cli` setting is persisted. A first-time Sign in with ChatGPT authorisation by the user and the paid API have not had a real acceptance yet.
+
+### Off-table review assistant (main task since 2026-10-29, phase 1)
+
+Start it the same way: run `python -m pokerlab.solver.server` in an ordinary PowerShell window and open <http://127.0.0.1:8765>.
+
+- **Claude subscription** (the assistant's default):
+  - Before first use, install the dependency: `python -m pip install "claude-agent-sdk>=0.2.174"`.
+  - Run `claude` in a terminal and sign in to your claude.ai subscription with `/login`.
+  - The app never reads or stores credentials. Each turn first checks where the credentials come from, which must be a subscription login. It stops when the quota runs out or extra charges would start, and never switches to pay-per-use billing.
+  - If the service process's environment contains variables such as `ANTHROPIC_API_KEY` or `ANTHROPIC_BASE_URL`, it refuses to send requests. Do not start the service from inside a Claude Code session.
+- **"手牌与对手" (Hands and opponents) panel**:
+  - Paste hands in PokerStars or GG format; code parses them and checks them by replay, and hands that pass are added to the statistics.
+  - Describe live hands to the assistant in plain text; it turns them into the common format and submits them, and you check them in the panel and click "确认计入统计" (Confirm and count).
+  - Player profiles list, for each of 18 statistics, the sample size, raw rate, posterior mean, 90% interval and tendency score (0–10, the posterior probability of being above the population level × 10), plus tags, showdown records and notes. Aliases can be merged and the hero's name set.
+- **Data**: in `outputs/coach/`, not in Git; set `POKERLAB_COACH_HOME` to move it. Hand revisions only add new files, and confirmations and notes go to an append-only log.
+- **HHP video material**:
+  - For private use, stored in `outputs/knowledge/hhp/`, not in Git; set `POKERLAB_KNOWLEDGE_HOME` to move it.
+  - The assistant searches the captions of 200 videos with `search_hhp` and reads the text with `read_hhp`, together with hand records transcribed from the video frames and checked by replay (currently 408 hands from 24 videos).
+  - With `find_hhp_hands` the assistant looks up these hands by hand type, position, stack depth, pot type, board and action line, and it can also find the video hands closest to a hand you recorded.
+  - Video hands include teaching scenarios and real hands analysed by the presenter (marked at the start of their notes); none of them count toward opponent statistics.
+- **Current limits**:
+  - The population priors are uncalibrated placeholders.
+  - Calibrating the statistics into opponent traits and node locks is a later phase.
+  - The PokerStars/GG parser has only been checked on synthetic hands, not on real exports.
+  - For off-table review only.
+
+Tests and real acceptance:
+
+```powershell
+python -m pytest tests/test_coach_hands.py tests/test_coach_store.py tests/test_claude_provider.py tests/test_solver_agent.py tests/test_instructions_consistency.py -q
+python scripts/coach_claude_acceptance.py
+```
+
+The real acceptance uses your Claude subscription quota for two short requests and writes the result to `outputs/coach-acceptance/<time>/acceptance.json`.
+
+### Inputs, units and limits
+
+Out-of-memory diagnosis (build the latest engine first, as above): in PowerShell, run `python scripts/diagnose_tree.py "path/to/config.json" --storage --output outputs/storage-diagnostic.json`. The output file must not exist yet. This mode keeps the game configuration, compares four storage schemes (isomorphism and compression on or off), and counts the real array structures without allocating the full tree; the peak headroom is still an estimate and is not presented as a measurement. Without `--storage` it shows the old rough estimate and a clearly labelled reduced-tree comparison, for diagnosis only, without changing the original configuration. WSL diagnostic subprocesses are capped at 2 GiB and 60 seconds each.
+
+Ordinary solves, the CLI and node reads no longer have an automatic timeout, and the 600 seconds in old configurations no longer stops a job. A job runs until it reaches the target precision or an explicit iteration cap, or until it is cancelled; the memory budget and process clean-up protections still apply. Explicit tests and diagnostics can set their own time limits, which is not the workbench default.
+
+2026-10-16: sparse storage of legal combos is wired in for compressed jobs without hard locks, keeping the original 16-bit quantisation and the full logical hand order. For the current tree (203/449 combos, SPR 12.5, three bet sizes on each street plus 3x raises), the exact pre-check fell from 14.253 to 13.231 GiB, about 1.022 GiB less array memory; this is an allocation plan, not a measured peak for the new version. Sparse expansion costs some speed (see the small same-spot comparison in the [progress log](docs/PROGRESS.md)), and no speed-up is claimed for this change. Hard locks still use the original dense path; old strategies and CFR states remain readable, and file sizes on disk are not optimised. The desktop Pokerlab launcher is unchanged.
+
+The user confirmed that this round's full acceptance uses **0.5% of the pot** (0.04 bb for an 8 bb starting pot). The new copy is `outputs/performance-20261016-sparse/config.json`, and the original 0.1% file and study are kept. Ranges, SPR, sizes per street, 16 threads and unlimited wall-clock time are unchanged. After the user later freed resources, the full tree was actually attempted, but its 13.231 GiB requirement was still above the 11.073 GiB safe budget at the time, so it was refused before allocation and cleaned up; there is still no full time, RSS or measured precision for the new version. Temporary copies in the sparse path were also reduced; 57 engine, 22 adapter and 72 real native integration tests pass, the small-case speed changed by about 1%, and no speed-up is claimed for wide trees. When resources allow, run the following in PowerShell from the project root (the output directory must not exist yet):
+
+```powershell
+python -X utf8 scripts/benchmark_config.py outputs/performance-20261016-sparse/config.json --cold --output outputs/performance-20261016-sparse/full-cold-02
+```
+
+2026-10-15: the engine now reuses DCFR scratch buffers, and the desktop and PowerShell launchers are unchanged. Bit-for-bit regression against the old implementation and 72 real native integration tests pass. On the historical SPR20 tree, 30 fixed iterations went from 151.95 to 19.28 seconds, and the baseline including precision measurement from 166.00 to 33.39 seconds, with only 4.8 MiB more diagnostic peak memory. That historical tree is not the current target tree (203/449 combos, three sizes per street), and 30 iterations did not reach the target precision. Acceptance of the new engine on the current target tree has not been done for lack of available memory, so the 7.9x iteration speed-up on the historical tree is not extrapolated into a guarantee for the full pipeline. The full configuration, test commands and evidence are in the latest [progress log](docs/PROGRESS.md).
+
+The same day, after the user closed a running game, a retry of the original tree was again stopped before allocation (14.253 GiB required against an 11.149 GiB safe budget), so there is no new full solve. Resource probing now uses Windows available memory after WSL has started, with the same reserve. On a generic error, cancellation keeps the serial lock until the supervisor has finished cleaning up, and waiting for cancellation is not a solve timeout. 57 budget and clean-up tests and 4 real native regressions pass; see the progress log.
+
+2026-10-13: the controlled pre-check for the full three-street, three-size configuration fell from 16.264 to 14.253 GiB, mainly by explicitly limiting allocator and thread overhead and calibrating the headroom, and by turning the model's visited set into a bitmap; this does not mean measured memory dropped by 2 GiB. Snapshots are also read and written in chunks, and best-response subtrees run in parallel, keeping the original strategy precision and summation order. Job `4c8e056088c848b7bc7d573d7df67aa8` ran to completion with 203/449 combos, SPR 12.5, three bet sizes on each street and ordinary 3x raises, with no timeout and no lowering of the original 0.1% target. The cold-start full pipeline took **2 h 34 min 54 s**, native RSS peaked at **13.8494 GiB**, and 1,060 iterations reached a measured **0.0921778381% of the pot**. It stopped because it reached the target, and the native process exited normally and was reaped. Memory acceptance passed; the five-minute speed target was not met. In the same run the baseline first went below 0.5% after 41 min 57 s; that is not the time of a separate full run at 0.5%. Commands, per-stage timings and numerical checks are in the latest [progress log](docs/PROGRESS.md).
+
+A baseline that has not converged and stops normally at its iteration cap also saves a `PLCFR001` cumulative strategy and regret state. After the maximum iterations are raised, the same tree continues from the saved iterations, and the interface separates earlier iterations from new ones. Old `PLPOL002/003` final strategies cannot be resumed. State in progress is not yet saved on cancellation or a crash, and an old converged baseline may need to be recomputed for a stricter target. CFR state takes extra disk space, so save time should not be read as iteration speed.
+
+The graphical card picker next to the board shows all 52 cards arranged by suit and sets the starting flop, turn or river board; after solving, chance nodes show the same card grid, with only legal branches clickable. The strategy grid shows actual frequencies: fold blue, check or call green, bet or raise red, and aggression above pot size purple; exactly 100% of the pot is still red. Within one node and one colour family, larger sizes are darker and equal sizes share a colour; sizes are ordered by their real value, not by the order of the actions. The legend, grid, action buttons and per-combo frequency bars share the palette: shade shows size and bar width shows probability. A raise's ratio is the extra raise amount divided by the pot after calling, and all-ins are judged by their actual ratio. A best response may be a pure strategy, and mixed frequencies are never faked for the sake of colour.
+
+- Entering 3, 4 or 5 board cards picks the starting street automatically. Ranges are listed OOP then IP and accept `AA,AKs`, specific combos with weights, and text import. The hero can be either player, and OOP always acts first at the root.
+- In the original solver workbench, pot is the current pot and stack is both players' effective remaining stack. The new UI takes amounts in bb and accepts decimals (to 0.01 bb, `chip_scale`=100); EV and precision are also in bb. Configurations saved by the new UI and the standalone assistant may record the metadata `amount_unit="bb"`, where one native unit equals 1 bb. This display field is stripped before native execution, and the computation and the compatibility field `target_unit="chips"` keep the original protocol. Old reports without this metadata show "原筹码单位" (original chip units) and are not relabelled as bb or converted. Loading an old study keeps its original numbers; check the unit basis before deciding the current input unit. Pokerstudio hands in chips or USD are still validated by their own adapter rules. There is no support for future rake, side pots with unequal stacks, or three players.
+- Bet and raise sizes are set for each street and shared by both players by default; "按位置配置尺寸／Donk" (sizes by position / donk) gives IP its own sizes and OOP turn and river donk bets. Bets accept `33%`, `10c` (10 bb in bb mode, 10 chips in the original chip mode) and `a`; raises accept `2x` and larger multiples, `60%` (raise amount ÷ pot after calling, as in GTO Wizard) and `a`. Each type allows at most 3 sizes per street and position, and SPR is capped at 20 (40 when a per-street raise limit is set); anything beyond is rejected rather than silently shrinking the tree. Raises are reported as raise-to; arbitrary absolute raise-to inputs are not supported yet.
+- Preflop action lines: when files exist under `outputs/gtow-preflop/`, the top of the page lets you pick a depth (100, 150, 200 or 400 bb, default 150 bb, because $800 = 160 bb is closest to 150 bb; the model is 8-max with a straddle, cEV, 7 bb opens) and click actions seat by seat. The hand grid and cards show every action and frequency for the current seat (raise, call, check, all-in, fold). Once the line reaches a two-player pot, both ranges, the pot and the effective stack are filled in; pick the board and solve, and adjust ranges and parameters on the left first if needed. All-in lines, pots with three or more players and lines that end preflop show only a note, and grey buttons are lines that were not recorded. The range box also accepts text copied from the GTO Wizard Ranges page. These files are not in Git.
+- Node page: the hand grid switches between Strategy, EV, Equity, EQR, range height and EV comparison, and can merge sizes. The right side has Hands, Summary, Filters, an equity chart, Ranges, Breakdown and Blockers, and the top shows overall action frequencies. A chance node can produce a report on that street's cards, and the workspace has a multi-board report below. Frequencies count combos, while EV and equity averages use blocker-adjusted weights, as in GTO Wizard (DECISIONS D34).
+- Bet-tree templates: Quick (1 size per street), Standard (2), Full (3) and Full low-memory (3 sizes, no river raises), all with at most 2 raises per street. Measurements and memory estimates are in `docs/PROJECT_STATE.md` A2e–A2g. WSL uses only half the memory by default; this machine sets `memory=28GB` in `%USERPROFILE%\.wslconfig`. When memory is short you can tick "允许占用闲置后台程序的内存" (allow using memory held by idle background programs), though the computer may become sluggish.
+- The chosen tree keeps every legal board card and later decision, with no future-value truncation. On 2026-10-06 the original configuration (240/290 combos, SPR 20, multiple sizes and ordinary raises) ran end to end in about 11 min 33 s on 16 threads, with a peak RSS of 7.15 GiB. After 500 iterations the actual exploitability was 0.4542% of the pot, short of the 0.1% target; this does not mean every wide, multi-size tree performs well enough. Per-stage results are in the progress log.
+- Root EV = the original pot plus the opponent's new money won back, minus your own new money. Earlier contributions are sunk, and without rake the two root EVs sum to the pot. Equity is the share won at showdown, counting ties, and is not EV. Values that are undefined at zero posterior probability are left blank.
+- Trait strength 0–6 is a logit bias, not percentage points or the share of weak hands in a betting range. Traits stack by rule and are then normalised within action categories and sizes; Neutral keeps the baseline. The templates are research assumptions with coarse hand-strength classes, not calibrated on real game data.
+- Opponent nodes on the flop, turn and river all support locking specific combos and full distributions in bulk. With `auto_suits=true` and no manual locks, the engine uses suit isomorphism it can prove; with manual locks, `expand_suits=true` keeps every board branch so that suits are not mixed. Adding a lock may require rebuilding a larger baseline. 16-bit storage does not merge bet sizes but has quantisation error, and the native re-evaluation tolerance was not loosened. Queries on snapshots with hard locks use f32 to keep the saved probability precision, so query memory can exceed that of the compressed solve.
+- Player profiles (Fish, Calling Station and others) are virtual incentives (% of the pot) on each of the opponent's decisions; they affect decisions only and are not counted in EV, and they are a different model from opponent traits. The default numbers were checked against the text on GTO Wizard's pages. River solutions match GTO Wizard's. On the flop and turn our incentives apply to all streets by default, while GTO Wizard's apply only to the current street; this can be switched under "作用范围" (Scope).
+- When re-solving after a lock you can choose what is locked upstream: nothing (the default), everything, or only that player. These are the same three options as GTO Wizard, whose default is to lock everything.
+- Not implemented yet: a free editor for adding and removing branches, roots with any player to act, finer draw and blocker features, an aggregate report over all flops, CFR checkpoints on cancellation or a crash, MCP, and three players. The current wide tree with three sizes per street and ordinary raises has passed full-pipeline memory acceptance but not the five-minute speed target; the next step is to verify iteration speed-ups such as scratch-buffer reuse (see the latest progress log).
+
+### Verification and resources
+
+```powershell
+python -m pytest -q
+$env:POKERLAB_NATIVE='1'
+python -m pytest tests/test_solver_native.py tests/test_workbench_native.py tests/test_action_sizes_native.py tests/test_solver_continuation.py pokerstudio/tests/test_solver_native.py -q
+$env:POKERLAB_BROWSER='1'
+python -m pytest tests/test_workbench_browser.py -q
+wsl -d Ubuntu --cd /mnt/c/Users/n1rva/projects/pokerlab -- cargo test --release
+python scripts/benchmark_flop.py --allin-raises --combined-only
+```
+
+Native tests and the existing full-solve browser integration are turned on explicitly with the switches above. The newer range, usability and configuration-race tests use the local Edge directly once the browser-test dependencies are installed, and need no real model. On 2026-10-08 the default regression gave 147 passed and 32 skipped (55.07 s; the new race files were not collected then). The race, usability, desktop and memory set then gave 51 passed (11.23 s), the three native test files 34 passed (45.90 s) and the full workbench browser loop 1 passed (46.70 s), and all JS syntax checks passed. Detailed evidence and scope are in the [progress log](docs/PROGRESS.md).
+
+2026-10-13 regression for the everyday defaults and start-up races: `python -m pytest tests/test_workbench_usability_browser.py tests/test_solver_agent_races_browser.py tests/test_solver_startup_browser.py -q` gave **11 passed in 24.15 s** (6 start-up, 4 configuration-race and 1 usability test). The existing assistant tests gave 5 passed, and the JS and Python syntax checks passed. The browser configuration regression uses real Edge with an isolated configuration service and does not re-solve the large tree; the full native benchmark and an audit of 26 saved results are in the progress log.
+
+Windows with 32 GB; the measured WSL limit is about 15.47 GiB. In automatic mode the safe budget is the smallest of Windows available memory minus 2 GiB, WSL available memory minus 512 MiB, and a 24 GiB cap; manual mode also includes the explicit cap in the minimum. The page's measurement is for display. The actual launch measures again inside a cross-process serial lock, and the WSL supervisor process checks again and sets an address-space limit; ordinary jobs have no automatic wall-clock limit. Failures to read resources are reported as errors. Windows total memory is never used in place of WSL available memory, and the system reserve, ranges, sizes and the native array pre-check are never cut. Cancelling, or an explicit diagnostic timeout, terminates and reaps the native process group and removes unfinished temporary snapshots without deleting finished results. Reported peaks are the RSS of the native Linux process, not the peak of the whole Windows and WSL system.
+
+Historical resource diagnosis (2026-10-08): a pot-20 copy of a saved wide-range configuration kept the full ranges and sizes, and both launches were refused by the safe pre-check before allocation. The estimates then were a 5.65 GiB peak, 4.66 GiB of engine arrays and a 3.99 GiB job budget, with exit code 1 and the process reaped. The tree was not shrunk and the system reserve was not cut. That copy differs from the 5.37 GiB estimate in a screenshot from the time, so it is not called an exact reproduction of the screenshot, and it is not the measured SPR 12.5 three-street, three-size run either. Historical evidence: `outputs/jobs/3538b9c4cc0847f89856ea11d1de99cb/usability-acceptance.json` and `outputs/memory-budget-diagnosis-20261008.json`.
+
+The baseline cache is keyed to the engine, adapter, branch-expansion options, spot, ranges, both players' sizes, donk settings and solver parameters. Changing only traits or compatible locks reuses the baseline, but never an old model's EV. The first node query still rebuilds the evaluation; repeated queries use a cache keyed to the final strategy and the input identity, up to 256 entries or 128 MiB. Named libraries are in `outputs/library` and studies in `outputs/studies`. After upgrading to this static routing, stop the old service with Ctrl+C and start it again with the launch command.
+
+### Heads-up PLO4 AI (from 2026-10-23, paused since 2026-10-29; separate from the hold'em workbench above)
+
+The goal of this line is a trainable, evaluable strategy baseline near equilibrium that covers a complete hand of heads-up PLO4; its scope and acceptance criteria are in the shared section of AGENTS.md / CLAUDE.md. When it was paused, the milestone was a controlled joint turn + river solve. The code is in `src/pokerlab/plo/`. Status, real verification results and next steps are in [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md), decisions in [docs/DECISIONS.md](docs/DECISIONS.md), and the mapping from papers to code in [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md) (all in Chinese).
+
+Run these in PowerShell from the project root. No output directory or file may exist yet; the programs never overwrite existing outputs:
+
+```powershell
+python -m pokerlab.plo status
+python -m pytest tests/test_plo_betting.py tests/test_plo_blockers.py tests/test_plo_evaluator.py tests/test_plo_engine.py tests/test_plo_engine_fuzz.py tests/test_plo_session.py tests/test_plo_subgame.py tests/test_plo_turn.py tests/test_plo_evaluate.py tests/test_plo_cli.py tests/test_plo_river_agent.py tests/test_instructions_consistency.py -q
+python -m pokerlab.plo solve-river examples/plo/river_small.json --output outputs/plo/run/river-small
+python -m pokerlab.plo query examples/plo/river_small.json outputs/plo/run/river-small/checkpoint.npz --history check
+python -m pokerlab.plo evaluate examples/plo/hu_river_solver_vs_baseline.json --output outputs/plo/run/hu-river-solver.json --decision-log outputs/plo/run/hu-river-solver.decisions.jsonl
+python -m pokerlab.plo evaluate examples/plo/hu_baseline_vs_baseline.json --output outputs/plo/run/hu-baseline-control.json
+python scripts/plo_verify_showdown.py --rows 2000 --output outputs/plo/run/showdown-rows.json
+python -m pokerlab.plo solve-turn examples/plo/turn_tiny_lp.json --output outputs/plo/run/turn-tiny --eval-every 50 --lp-limit 6 --spliced-baseline
+python -m pokerlab.plo solve-turn examples/plo/turn_small.json --output outputs/plo/run/turn-small --eval-every 30 --spliced-baseline
+python scripts/plo_budget_diagnostics.py --output outputs/plo/run/budget.json
+python scripts/plo_resource_profile.py --output outputs/plo/run/resources.json
+python scripts/plo_reference_error_control.py --output outputs/plo/run/refctl
+python -m pokerlab.plo solve-turn examples/plo/turn_sample600.json --output outputs/plo/run/turn-600 --iterations 20 --eval-every 10 --workers 4
+python scripts/plo_turn_agent_demo.py --output outputs/plo/run/turn-agent-controlled
+python scripts/output_manifest.py outputs/plo/run --output manifests/outputs-run.json
+python scripts/plo_agent_reference_eval.py --output outputs/plo/run/agent-reference
+python scripts/plo_abstraction_eval.py river --board paired_flush --output outputs/plo/run/abs-river-paired_flush
+python scripts/plo_abstraction_eval.py turn --config examples/plo/turn_sample1500.json --mode v1 --iterations 200 --workers 4 --output outputs/plo/run/abs-turn1500-v1
+python scripts/plo_blueprint_validate.py --output outputs/plo/run/blueprint-validate
+python scripts/plo_blueprint_train.py --iterations 150000 --max-minutes 40 --output outputs/plo/run/blueprint-v0
+python -m pokerlab.plo evaluate examples/plo/hu_blueprint_vs_baseline.json --output outputs/plo/run/hu-blueprint.json
+```
+
+- **Bet abstraction**: by default four exact pot fractions (1/3, 1/2, 2/3 and 1), plus the minimum legal bet or raise and two boundary actions, a pot-size bet or a short-stack all-in, with at most 2 raises. The pot-limit formula h + P + 2c is shared by the engine and the solver tree.
+- **River subgame**: reports give exploitability = NashConv/2 as a share of the starting pot, evaluated on the average strategy; it holds only for that range and size tree.
+- **Joint turn + river subgame** (`solve-turn`): with the 4 turn board cards and explicit ranges fixed, one CFR run optimises the turn strategy together with the river strategies under all 48 river cards; for each pair of disjoint hands, each river card has probability 1/40. Small instances are checked against a joint LP, and `--spliced-baseline` also reports the exploitability of the spliced approach (each river solved separately, then joined) for comparison. Showdowns are computed either densely (the reference for small instances) or by inclusion–exclusion per river card (memory linear in range size, up to several thousand hands per player), and `--workers N` runs blocks of river cards in parallel threads. Only controlled stacks (SPR ≤ 2) were tested, and the conclusions apply only to that subgame.
+- **Diagnostic scripts**: `plo_budget_diagnostics.py` reports exploitability within the sampled range separately from the error against the reference range; `plo_resource_profile.py` measures time, the CPU-to-wall-clock ratio and peak memory for each stage.
+- **HU playing agent `river_solver`**:
+  - Uses the fixed baseline `baseline-v1` on the first three streets.
+  - On the river it infers both ranges from the public actions with Bayes' rule, then solves and acts by the solved strategy. The decision log records where the ranges came from, the solver configuration and the latency.
+  - This is an independent river solve, not global safe re-solving, and it does not claim to reach a PLO equilibrium.
+- **HU playing agent `turn_river_solver`** (2026-10-25): uses baseline-v1 (a temporary baseline) preflop and on the flop. At its first turn decision it solves one joint turn + river game, and on the river it reads the same solution instead of re-solving. The handling of off-tree actions and every fallback are written to the decision log.
+- **Hand abstraction v1** (2026-10-25, `pokerlab.plo.abstraction`): abstracts information while keeping payoffs exact. River hands are bucketed by equity × blocker features, and turn hands by equity × how their value changes across river cards × blockers. River buckets refine turn buckets, which keeps perfect recall. Quality is evaluated by best response in the original reference game.
+- **Four-street blueprint v0** (2026-10-25, `pokerlab.plo.blueprint`): external-sampling MCCFR at 20 bb with limited sizes and a coarse abstraction (without perfect recall), trained on all four streets. The agent `blueprint_v0` uses the blueprint on all four streets; with `early_policy`, `turn_river_solver` also uses it preflop, on the flop and for its range model.
+- **Match results**: for functional checks and baseline comparison only; they do not show professional strength or real-game profit.
+- **Versions**: a local Git repository (created 2026-10-25), and reports record the commit. Large outputs are not in Git; `manifests/` records their paths and SHA-256 hashes.
+
+---
 
 ## 中文说明：本地翻后 Solver
 
@@ -51,7 +252,7 @@ AI coding agents (Claude Code, OpenAI Codex) wrote much of the code under my dir
 python -m pokerlab.solver.server
 ```
 
-浏览器打开 **http://127.0.0.1:8765**。计算自动调用已构建的 Ubuntu WSL Rust 引擎，不需要在 WSL 中启动网页服务。服务只监听本机；Ctrl+C 退出并取消所属计算任务。
+浏览器打开 **<http://127.0.0.1:8765>**。计算自动调用已构建的 Ubuntu WSL Rust 引擎，不需要在 WSL 中启动网页服务。服务只监听本机；Ctrl+C 退出并取消所属计算任务。
 
 本机已在 `C:\Users\n1rva\OneDrive\Desktop` 安装 `Pokerstudio.lnk` 和 `Pokerlab Solver.lnk`，目标、参数、工作目录及图标已读回核对，本轮再次确认两个文件存在。安装入口为 `powershell -ExecutionPolicy Bypass -File pokerstudio/install-desktop.ps1`；冷启动、重复启动复用后台及停止自有后台已有实测，实际 Windows 独立窗口的无地址栏视图尚未验收。关闭窗口保留服务和任务；端口占用、日志及显式关停说明见 [桌面启动](pokerstudio/docs/DESKTOP.md)，原命令行入口继续可用。
 
