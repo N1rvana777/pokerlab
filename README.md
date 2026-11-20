@@ -1,4 +1,6 @@
-﻿# PokerLab 本地翻后 Solver
+﻿# PokerLab
+
+A research workbench for heads-up poker. It solves no-limit hold'em postflop spots to equilibrium, builds a model of the opponent, and computes the exact best response to that model. The question behind it: how far should play deviate from equilibrium when the evidence about an opponent is limited and noisy?
 
 > **Public snapshot / 公开版说明**
 >
@@ -15,6 +17,29 @@
 > 这是私人工作仓库的公开副本，不含提交历史。没有包含：私人手牌记录与对手信息、求解与研究输出（`outputs/`）、
 > 上游引擎源码（按 `Cargo.toml` 固定的版本另行获取并应用 `third_party/patches/`），以及下载第三方视频数据的脚本。
 > 文档中涉及真实手牌的段落已删改。本仓库使用 AGPL-3.0-or-later 许可证（见 `LICENSE`），与上游引擎相同。
+
+## Overview
+
+- **Equilibrium solving.** Discounted CFR (DCFR) on full flop, turn and river trees, with every turn and river card and no card abstraction. The core engine is the open-source [b-inary/postflop-solver](https://github.com/b-inary/postflop-solver) (Rust), extended with a patch and an adapter.
+- **Opponent models and exploitation.** Stackable behavioural traits, node locks and player profiles define the opponent's strategy at every information set. That strategy is frozen, and an exact best response is computed against it.
+- **Opponent evidence.** A replay-checked hand-history format, a PokerStars/GG parser, and Beta-binomial posteriors with 90% intervals for 18 opponent statistics.
+- **Review assistant.** An LLM assistant (Claude or OpenAI models) that may quote only numbers produced by the solver and statistics tools. Its private knowledge base, built from about 200 public strategy videos, is not included.
+- **Heads-up pot-limit Omaha (paused).** A Libratus-style research prototype in `src/pokerlab/plo/`: an exact rules engine and hand evaluator, hand abstraction, a 20 bb Monte Carlo CFR blueprint, and agents that re-solve turn-and-river subgames at decision time.
+
+## Checks and results
+
+- Solver results agree with an independent linear program, closed-form test games and GTO Wizard, a commercial solver.
+- A full flop tree with three bet sizes per street (11.1 million nodes, 3.46 billion action entries) was solved to 0.092% of the pot in about 2.6 hours on a 32 GB desktop PC, with a 13.9 GiB memory peak.
+- In the Omaha prototype, solving turn and river jointly cut exploitability from 1.108% to 0.026% of the pot compared with solving each river separately. On a small game, a linear program matched the joint solve.
+- These figures measure solution quality. They are not claims about playing strength.
+
+## Status
+
+The hold'em workbench and the review assistant are in active development. The Omaha line has been paused since October 2026. To start the workbench, run `python -m pokerlab.solver.server` and open http://127.0.0.1:8765; setup details are below, in Chinese.
+
+AI coding agents (Claude Code, OpenAI Codex) wrote much of the code under my direction. `CLAUDE.md` and `AGENTS.md` are their instructions, and `docs/DECISIONS.md` records which decisions were mine. The rest of this README and the documents in `docs/` are in Chinese.
+
+## 中文说明：本地翻后 Solver
 
 当前为可运行的阶段 1 研究工作台：两人 Flop/Turn/River、可叠加特质、冻结完整对手策略、导出 Hero 信息集最佳回应，并查看组合与后续节点。完整需求见 [原文](Codex_Poker_Solver_Prompt.md)，实际数值与限制见 [进度](docs/PROGRESS.md)。原有数学代码与阶段 0 文档均保留。
 
